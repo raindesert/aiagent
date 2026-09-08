@@ -1,0 +1,91 @@
+agent:
+  name: my-assistant
+
+context:
+  system_prompt:
+    template: |
+      你是 {role}。当前时间 {current_time}。
+
+      规则：
+      1. 优先使用工具获取真实数据，不要编造。
+      2. 回答简洁，使用中文。
+      3. 如果工具结果不充分，明确告诉用户。
+    variables:
+      role: 编程助手
+  max_history_messages: 30          # 超出时按策略截断
+  max_history_tokens: 6000          # 粗略估计, 1 token ≈ 1.5 字符
+
+model:
+  backend: openai                    # 当前仅支持 openai 兼容协议
+  name: CPM5-2B
+  base_url: http://localhost:8080/v1
+  api_key: ${OPENAI_API_KEY}         # 支持 ${ENV_VAR} 占位
+  temperature: 0.7
+  max_tokens: 2048
+  timeout: 300
+  stream: true
+
+tools:
+  - name: get_current_time
+    description: 获取服务器当前时间（ISO8601 格式）
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        timezone:
+          type: string
+          description: 时区名, 例如 Asia/Shanghai; 留空用本地时区
+      required: []
+    handler: tools.time:get_current_time
+
+  - name: get_weather
+    description: 查询指定城市的当前天气（mock 数据，用于演示）
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        city:
+          type: string
+          description: 城市名称
+      required: [city]
+    handler: tools.weather:get_weather
+
+  - name: search_files
+    description: 在指定目录中按 glob 模式搜索文件
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        pattern:
+          type: string
+          description: glob 模式, 例如 "*.py" 或 "**/*.md"
+        path:
+          type: string
+          description: 搜索根目录
+          default: "."
+        limit:
+          type: integer
+          description: 最多返回多少条
+          default: 20
+      required: [pattern]
+    handler: tools.search_files:search_files
+
+  - name: send_rabbit_message
+    description: 通过本地 RabbitMQ HTTP 网关发送一条消息 (GET 127.0.0.1:8081/rabbit/send?msg=...)
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        message:
+          type: string
+          description: 要发送的消息内容
+        timeout:
+          type: integer
+          description: HTTP 请求超时秒数, 默认 10
+          default: 10
+      required: [message]
+    handler: tools.rabbit:send_rabbit_message
+
+loop:
+  max_iterations: 8                  # 防止 tool call 死循环
+  tool_timeout: 30                   # 单个 tool 调用的最长执行时间
