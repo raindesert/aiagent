@@ -39,14 +39,18 @@ tools:
     handler: tools.time:get_current_time
 
   - name: get_weather
-    description: 查询指定城市的当前天气（mock 数据，用于演示）
+    description: 查询指定城市的实时天气 (调 wttr.in 公开 API, 中英文城市名均可)
     enabled: true
     parameters:
       type: object
       properties:
         city:
           type: string
-          description: 城市名称
+          description: 城市名, 例如 北京 / Shanghai / Tokyo
+        timeout:
+          type: integer
+          description: HTTP 请求超时秒数, 默认 10
+          default: 10
       required: [city]
     handler: tools.weather:get_weather
 
