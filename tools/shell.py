@@ -1,13 +1,16 @@
 """工具: 在指定目录执行 shell 命令, 返回 stdout / stderr / exit code。
 
-Windows 默认走 cmd.exe (系统 shell), 调用 PowerShell 语法请用 `powershell -NoProfile -Command "..."`。
-为保证中文输出正常, Windows 上自动先 `chcp 65001` 切换到 UTF-8 代码页。
+Windows 默认走 PowerShell (`powershell -NoProfile -NonInteractive -EncodedCommand`),
+用 UTF-16 LE + base64 编码避免引号转义问题; 内部先切 `[Console]::OutputEncoding = UTF8`
+解决 PowerShell 5.1 中文输出乱码。
+Linux / macOS 走 /bin/sh -c。
 
 安全: 内置危险命令白名单拦截 (递归删除 / 格式化磁盘 / 关机 / fork bomb 等)。
 检测到危险操作时拒绝执行, 必须显式设置 confirm=true 才能跑, 实际部署中由模型把这个信息转给用户确认。
 """
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 import sys
@@ -15,6 +18,21 @@ from pathlib import Path
 
 _DEFAULT_TIMEOUT = 30  # 秒
 _MAX_OUTPUT_CHARS = 50_000  # 单次输出最大字符
+
+# PowerShell 前缀: 关闭 progress + 把 stdout/stderr 编码切到 UTF-8
+# (Information stream 噪音由 Python 端正则清掉, 因为 Write-Host 走 host stream 没法 redirect)
+_PS_UTF8_PREFIX = (
+    "$ProgressPreference = 'SilentlyContinue'; "
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+    "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+)
+
+# PowerShell 在 stderr 写的 CLIXML 噪音 (Write-Host 等会触发), 整体去掉
+_CLIXML_RE = re.compile(r"#<\s*CLIXML\s*<Objs.*?</Objs>\s*", re.DOTALL)
+
+
+def _clean_stderr(s: str) -> str:
+    return _CLIXML_RE.sub("", s).rstrip()
 
 
 # ---- 危险命令检测 ----
@@ -24,8 +42,8 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
     # 递归删除 (跨平台)
     (r'\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\b', 'rm -rf/-fr (递归删除)'),
     (r'\brm\s+--recursive\b', 'rm --recursive'),
-    (r'\brmdir\s+/[sS]\s+/[qQ]\b', 'rmdir /s /q (Windows 递归删除)'),
-    (r'\bdel\s+/[sS]\s+/[qQ]\b', 'del /s /q (Windows 递归删除)'),
+    (r'\brmdir\s+/[sS]\s+/[qQ]\b', 'rmdir /s /q (cmd 递归删除)'),
+    (r'\bdel\s+/[sS]\s+/[qQ]\b', 'del /s /q (cmd 递归删除)'),
     (r'\bRemove-Item\b[^|]*?-[rR]ecurse', 'Remove-Item -Recurse (PowerShell 递归删除)'),
     # 格式化 / 写裸设备
     (r'\bformat\s+[a-zA-Z]:', 'format <盘符> (格式化磁盘)'),
@@ -45,7 +63,7 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
     (r'\bStop-Computer\b', 'Stop-Computer (关机)'),
     (r'\bRestart-Computer\b', 'Restart-Computer (重启)'),
     # Fork bomb
-    (r':\s*\(\s*\)\s*\{[^}]*\|\s*:\s*&\s*\}\s*;', 'fork bomb'),
+    (r':\s*\(\s*\)\s*\{[^}]*\|\s*:\s*&\s*\}\s*;\s*:', 'fork bomb'),
     # 磁盘擦除 / 覆写
     (r'\bcipher\s+/[wW]\b', 'cipher /w (擦除空闲空间)'),
     (r'\bsdelete\b', 'sdelete (磁盘擦除)'),
@@ -70,6 +88,17 @@ def _check_dangerous(command: str) -> str | None:
     return None
 
 
+def _build_argv(command: str) -> list[str]:
+    """根据平台构造实际的 shell 调用参数 (list, 不经 shell=True 解析)。"""
+    if sys.platform == "win32":
+        # 用 EncodedCommand + UTF-16 LE + base64, 完全避开引号/特殊字符问题
+        full = _PS_UTF8_PREFIX + command
+        encoded = base64.b64encode(full.encode("utf-16-le")).decode("ascii")
+        return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    # POSIX
+    return ["/bin/sh", "-c", command]
+
+
 def run_shell(
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
@@ -79,7 +108,7 @@ def run_shell(
     """执行一条 shell 命令。
 
     Args:
-        command: shell 命令字符串。
+        command: shell 命令字符串 (Windows 上按 PowerShell 语法解析)。
         timeout: 超时秒数, 默认 30。
         cwd: 工作目录, 默认当前目录。
         confirm: 是否确认执行检测到的危险操作, 默认 false。
@@ -101,24 +130,21 @@ def run_shell(
             f"  1. 先向用户说明这个命令会做什么、影响哪些路径\n"
             f"  2. 取得用户明确同意后, 重新调用 run_shell 并设置 confirm=true\n"
             f"\n"
-            f"或: 修改命令避开危险模式 (例如 `rm -rf` → `rm -ri` 交互式, 或改用 Python `shutil.rmtree` 走更可控的路径)"
+            f"或: 修改命令避开危险模式 (例如 `rm -rf` → `rm -ri` 交互式, "
+            f"或改用 Python `shutil.rmtree` 走更可控的路径)"
         )
 
     workdir = Path(cwd).expanduser()
     if not workdir.is_dir():
         return f"工作目录不存在: {workdir}"
 
-    # Windows 切到 UTF-8 代码页再执行, 避免中文输出乱码
-    if sys.platform == "win32":
-        full_cmd = f"chcp 65001 >nul 2>&1 && {command}"
-    else:
-        full_cmd = command
-
+    argv = _build_argv(command)
+    shell_name = "powershell" if sys.platform == "win32" else "/bin/sh"
     prefix = f"⚠️ [已确认执行危险操作: {danger}]\n" if danger else ""
+
     try:
         result = subprocess.run(
-            full_cmd,
-            shell=True,
+            argv,
             cwd=str(workdir),
             capture_output=True,
             text=True,
@@ -129,16 +155,17 @@ def run_shell(
     except subprocess.TimeoutExpired:
         return f"{prefix}命令执行超时 ({timeout}s)"
     except FileNotFoundError as e:
-        return f"{prefix}shell 不可用: {e}"
+        return f"{prefix}{shell_name} 不可用: {e}"
     except OSError as e:
         return f"{prefix}执行出错: {e}"
 
     out = (result.stdout or "").rstrip()
-    err = (result.stderr or "").rstrip()
+    err = _clean_stderr(result.stderr or "")
 
     parts: list[str] = []
     if prefix:
         parts.append(prefix.rstrip())
+    parts.append(f"[shell] {shell_name}")
     parts.append(f"[cwd] {workdir}")
     if out:
         if len(out) > _MAX_OUTPUT_CHARS:

@@ -91,7 +91,7 @@ tools:
     handler: tools.rabbit:send_rabbit_message
 
   - name: run_shell
-    description: 在指定目录执行 shell 命令, 返回 stdout/stderr/exit code (Windows 默认走 cmd, 调用 PowerShell 用 `powershell -Command "..."`)
+    description: 在指定目录执行 shell 命令, 返回 stdout/stderr/exit code (Windows 默认走 PowerShell, 内部用 EncodedCommand + UTF-16 LE 编码; Linux/macOS 走 /bin/sh)
     enabled: true
     parameters:
       type: object

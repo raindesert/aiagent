@@ -21,7 +21,7 @@
 | `get_weather` | 调 [wttr.in](https://wttr.in) 查实时天气 (中英文城市名) |
 | `search_files` | 在目录里按 glob 模式搜索文件 |
 | `send_rabbit_message` | 调本地 RabbitMQ HTTP 网关 (`127.0.0.1:8081`) 发消息 |
-| `run_shell` | 执行 shell 命令, Windows 自动 `chcp 65001` 防中文乱码;内置危险命令拦截 |
+| `run_shell` | 执行 shell 命令, Windows 默认调 PowerShell (UTF-8 编码, 避免引号问题); 内置危险命令拦截 |
 | `read_file` | 读文件, 带行号 (`cat -n` 风格), 支持起止行 |
 | `write_file` | 写文件, 自动建父目录 |
 | `edit_file` | 精确字符串替换, `old` 必须唯一匹配 |
@@ -229,6 +229,34 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 - Tool 调用结果缓存 (相同输入直接返回)
 - `python_run` 的危险代码拦截 (类似 `run_shell` 的 confirm 机制)
 - 危险命令的 CLI 交互确认 (现在靠模型把 "需要确认" 信息转给用户)
+
+## `run_shell` 默认 shell 行为
+
+| 平台 | shell | 备注 |
+|------|-------|------|
+| Windows | `powershell -NoProfile -NonInteractive -EncodedCommand <b64>` | 自动切 UTF-8 编码, 中文不乱码; 用 EncodedCommand 避开所有引号转义 |
+| Linux / macOS | `/bin/sh -c <cmd>` | POSIX 兼容 |
+
+Windows 命令按 **PowerShell 语法**解析:
+
+```powershell
+# OK
+Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+Get-ChildItem | Select-Object -First 3 Name
+Remove-Item -Recurse -Force build
+
+# 旧 cmd 语法不工作
+dir /B tools          # ✗ /B 是 cmd 开关, PowerShell 不识别 (用 Get-ChildItem)
+rmdir /s /q foo        # ✗ (用 Remove-Item -Recurse -Force foo)
+```
+
+中文变量和字符串都正常:
+
+```powershell
+$name = '张三'; Write-Host "用户: $name"   # 输出: 用户: 张三
+```
+
+> 历史变更: 早期版本默认走 cmd, 后来切换到 PowerShell。如果之前有依赖 cmd 语法的脚本, 需要改成 PowerShell 等价写法。
 
 ## `run_shell` 安全机制
 
