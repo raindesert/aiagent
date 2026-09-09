@@ -21,7 +21,7 @@
 | `get_weather` | 调 [wttr.in](https://wttr.in) 查实时天气 (中英文城市名) |
 | `search_files` | 在目录里按 glob 模式搜索文件 |
 | `send_rabbit_message` | 调本地 RabbitMQ HTTP 网关 (`127.0.0.1:8081`) 发消息 |
-| `run_shell` | 执行 shell 命令, Windows 自动 `chcp 65001` 防中文乱码 |
+| `run_shell` | 执行 shell 命令, Windows 自动 `chcp 65001` 防中文乱码;内置危险命令拦截 |
 | `read_file` | 读文件, 带行号 (`cat -n` 风格), 支持起止行 |
 | `write_file` | 写文件, 自动建父目录 |
 | `edit_file` | 精确字符串替换, `old` 必须唯一匹配 |
@@ -218,7 +218,7 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 - 只支持原生 function calling (ReAct 文本解析模式后续可加)
 - 记忆截断是简单 FIFO, 没有摘要压缩
 - 单进程, 不支持服务端多用户
-- `run_shell` 没有任何安全沙箱, agent 拿到这个工具等于能跑任何命令
+- `python_run` 没有危险代码拦截, agent 拿到这个工具等于能跑任意 Python (要更安全可改用受限子进程或 WASM)
 
 ## 后续可加的东西
 
@@ -226,5 +226,23 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 - 对话持久化 (SQLite / JSON)
 - FastAPI 服务化
 - 流式输出 token 到前端 (SSE / WebSocket)
-- `run_shell` 的白名单/沙箱
 - Tool 调用结果缓存 (相同输入直接返回)
+- `python_run` 的危险代码拦截 (类似 `run_shell` 的 confirm 机制)
+- 危险命令的 CLI 交互确认 (现在靠模型把 "需要确认" 信息转给用户)
+
+## `run_shell` 安全机制
+
+内置常见危险模式拦截 (正则, 大小写不敏感):
+
+- **递归删除**: `rm -rf` / `rmdir /s /q` / `del /s /q` / `Remove-Item -Recurse`
+- **格式化 / 写裸设备**: `format X:` / `Format-Volume` / `diskpart` / `mkfs*` / `dd of=/dev/sd*`
+- **启动破坏**: `bcdedit /delete`
+- **关机/重启**: `shutdown` / `reboot` / `Stop-Computer` / `Restart-Computer`
+- **Fork bomb**: `:(){ :|:& };:`
+- **磁盘擦除**: `cipher /w` / `sdelete` / `shred`
+- **下载并执行**: `curl | sh` / `iwr | iex`
+- **系统破坏**: `net user/delete` / `reg delete` / `Remove-Item HK*`
+
+被拦截时返回错误, 告诉模型 "需要用户确认, 设置 `confirm=true` 重试"。模型会把这条信息转给用户, 用户明确同意后模型再带 `confirm=true` 调用, 实际执行时输出含 `⚠️` 警告前缀。
+
+普通命令 (`echo`, `dir`, `git`, `npm`, `curl <url>` 等) 不受影响。`rm` 单文件、`del` 单文件也不在拦截列表 (这些可恢复)。
