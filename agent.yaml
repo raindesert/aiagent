@@ -90,6 +90,161 @@ tools:
       required: [message]
     handler: tools.rabbit:send_rabbit_message
 
+  - name: run_shell
+    description: 在指定目录执行 shell 命令, 返回 stdout/stderr/exit code (Windows 默认走 cmd, 调用 PowerShell 用 `powershell -Command "..."`)
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        command:
+          type: string
+          description: 要执行的 shell 命令
+        timeout:
+          type: integer
+          description: 超时秒数, 默认 30
+          default: 30
+        cwd:
+          type: string
+          description: 工作目录, 默认当前目录
+          default: "."
+      required: [command]
+    handler: tools.shell:run_shell
+
+  - name: read_file
+    description: 读取文件内容, 带行号输出 (类似 cat -n), 可指定起始行和最大行数
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 文件路径
+        start_line:
+          type: integer
+          description: 起始行号 (0-indexed), 默认 0
+          default: 0
+        max_lines:
+          type: integer
+          description: 最多读取行数, 默认 500
+          default: 500
+      required: [path]
+    handler: tools.files:read_file
+
+  - name: write_file
+    description: 写入内容到文件, 默认覆盖, 自动创建父目录
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 文件路径
+        content:
+          type: string
+          description: 要写入的内容
+        encoding:
+          type: string
+          description: 文件编码, 默认 utf-8
+          default: utf-8
+      required: [path, content]
+    handler: tools.files:write_file
+
+  - name: edit_file
+    description: 精确替换文件中的字符串片段 (old 必须唯一匹配, 除非 replace_all=true)
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 文件路径
+        old:
+          type: string
+          description: 要替换的原文本
+        new:
+          type: string
+          description: 替换后的文本
+        replace_all:
+          type: boolean
+          description: 是否替换所有匹配, 默认 false
+          default: false
+      required: [path, old, new]
+    handler: tools.files:edit_file
+
+  - name: web_fetch
+    description: 抓取 URL 内容, HTML 自动转纯文本, 超过 max_chars 截断
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+          description: 完整 URL, http 或 https
+        max_chars:
+          type: integer
+          description: 返回内容最大字符数, 默认 50000
+          default: 50000
+        timeout:
+          type: integer
+          description: 请求超时秒数, 默认 15
+          default: 15
+      required: [url]
+    handler: tools.web:web_fetch
+
+  - name: http_request
+    description: 通用 HTTP 客户端, 支持 GET/POST/PUT/DELETE/PATCH/HEAD, headers 传 JSON 字符串
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        method:
+          type: string
+          description: HTTP 方法, 大写
+          enum: [GET, POST, PUT, DELETE, PATCH, HEAD]
+        url:
+          type: string
+          description: 完整 URL
+        headers:
+          type: string
+          description: 可选, JSON 字符串, 例如 {"Authorization":"Bearer xxx"}
+        body:
+          type: string
+          description: 请求 body 字符串
+        timeout:
+          type: integer
+          description: 超时秒数, 默认 30
+          default: 30
+      required: [method, url]
+    handler: tools.http:http_request
+
+  - name: grep_search
+    description: '在目录中按正则搜索文本, 输出 "file:行号: 片段" 格式'
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        pattern:
+          type: string
+          description: 正则表达式 (Python re 语法)
+        path:
+          type: string
+          description: 搜索根目录, 默认 .
+          default: "."
+        glob:
+          type: string
+          description: 文件 glob 过滤, 默认 * (所有文件)
+          default: "*"
+        case_insensitive:
+          type: boolean
+          description: 是否忽略大小写, 默认 false
+          default: false
+        max_results:
+          type: integer
+          description: 最多返回多少条匹配, 默认 100
+          default: 100
+      required: [pattern]
+    handler: tools.grep:grep_search
+
 loop:
   max_iterations: 8                  # 防止 tool call 死循环
   tool_timeout: 30                   # 单个 tool 调用的最长执行时间

@@ -47,3 +47,5 @@ logs/
 # 临时文件
 _tmp_*
 _*.py.bak
+_test_*.py
+_*.tmp
