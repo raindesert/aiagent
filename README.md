@@ -13,7 +13,7 @@
 - **工具沙箱** —— 每个工具独立超时, 异常被捕获并以 tool message 形式回喂
 - **可扩展** —— 新增工具只需写函数 + 在 yaml 里加一段配置
 
-## 已实现工具 (9 个)
+## 已实现工具 (10 个)
 
 | 工具 | 能力 |
 |------|------|
@@ -28,6 +28,7 @@
 | `web_fetch` | 抓 URL, HTML 自动转纯文本 |
 | `http_request` | 通用 HTTP 客户端 (GET/POST/PUT/DELETE/PATCH/HEAD) |
 | `grep_search` | 在目录里按正则搜索, 输出 `file:行号: 片段` 格式 |
+| `python_run` | 子进程跑 Python 代码, 用 `sys.executable`, 通过 stdin 喂代码 (无长度限制) |
 
 ## 目录结构
 
@@ -56,7 +57,8 @@ aiagent/
     ├── files.py            # read_file / write_file / edit_file
     ├── web.py              # web_fetch (HTML→text)
     ├── http.py             # http_request
-    └── grep.py             # grep_search
+    ├── grep.py             # grep_search
+    └── python_run.py       # python_run
 ```
 
 ## 快速开始

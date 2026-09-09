@@ -245,6 +245,26 @@ tools:
       required: [pattern]
     handler: tools.grep:grep_search
 
+  - name: python_run
+    description: 在子进程跑 Python 代码, 返回 stdout/stderr/exit code (用 sys.executable 解释器, 通过 stdin 喂代码)
+    enabled: true
+    parameters:
+      type: object
+      properties:
+        code:
+          type: string
+          description: 要执行的 Python 代码
+        timeout:
+          type: integer
+          description: 超时秒数, 默认 30
+          default: 30
+        cwd:
+          type: string
+          description: 工作目录, 默认当前目录
+          default: "."
+      required: [code]
+    handler: tools.python_run:python_run
+
 loop:
   max_iterations: 8                  # 防止 tool call 死循环
   tool_timeout: 30                   # 单个 tool 调用的最长执行时间
