@@ -34,15 +34,30 @@ def main() -> int:
         "--print-config", action="store_true", help="打印配置后退出"
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="打印 DEBUG 日志"
+        "-v", "--verbose", action="store_true", help="显示 INFO 级别日志 (默认隐藏)"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="显示 DEBUG 级别日志 (比 -v 更详细, 含 tool call 详情)"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="只显示 ERROR 及以上 (静默模式)"
     )
     parser.add_argument(
         "-m", "--message", default=None, help="单轮模式: 直接发一条消息并打印回答"
     )
     args = parser.parse_args()
 
+    # 日志级别: 默认 WARNING (关闭 INFO 噪音), -v -> INFO, --debug -> DEBUG, -q -> ERROR
+    if args.quiet:
+        level = logging.ERROR
+    elif args.debug:
+        level = logging.DEBUG
+    elif args.verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=level,
         format="[%(levelname)s] %(name)s: %(message)s",
     )
 
