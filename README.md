@@ -111,7 +111,7 @@ agent:
 ```powershell
 $env:OPENAI_API_KEY = "sk-..."
 $env:DEEPSEEK_API_KEY = "sk-..."
-$env:MS_KEY = "sk-..."
+$env:MS_API_KEY = "sk-..."
 ```
 
 ### 3. 跑起来
@@ -157,8 +157,8 @@ CLI 里切换:
    qwen-local     CPM5-2B                http://localhost:8080/v1
  * deepseek       deepseek-chat          https://api.deepseek.com/v1
    modelscope     Qwen/Qwen3.8-Flash-Next https://api-inference.modelscope.cn/v1
->>> /model qwen-plus
-已切换: deepseek (model: deepseek-chat) → qwen-plus (model: qwen-plus)
+>>> /model modelscope
+已切换: qwen-local (model: CPM5-2B) → modelscope (model: Qwen/Qwen3.8-Flash-Next)
 ```
 
 切换**不**清空对话历史, 新模型能直接看到之前聊的内容。
