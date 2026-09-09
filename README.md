@@ -111,7 +111,7 @@ agent:
 ```powershell
 $env:OPENAI_API_KEY = "sk-..."
 $env:DEEPSEEK_API_KEY = "sk-..."
-$env:DASHSCOPE_API_KEY = "sk-..."
+$env:MS_KEY = "sk-..."
 ```
 
 ### 3. 跑起来
@@ -156,9 +156,7 @@ CLI 里切换:
 >>> /models
    qwen-local     CPM5-2B                http://localhost:8080/v1
  * deepseek       deepseek-chat          https://api.deepseek.com/v1
-   qwen-plus      qwen-plus              https://dashscope.aliyuncs.com/compatible-mode/v1
-   gpt-4o-mini    gpt-4o-mini            https://api.openai.com/v1
-
+   modelscope     Qwen/Qwen3.8-Flash-Next https://api-inference.modelscope.cn/v1
 >>> /model qwen-plus
 已切换: deepseek (model: deepseek-chat) → qwen-plus (model: qwen-plus)
 ```
