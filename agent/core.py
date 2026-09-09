@@ -5,7 +5,13 @@ import json
 import logging
 from dataclasses import dataclass
 
-from .config import AgentConfig
+from .config import (
+    AgentConfig,
+    ModelsConfig,
+    entry_to_model_config,
+    find_model_entry,
+    load_models_config,
+)
 from .context import ContextManager
 from .memory import Memory
 from .model import ModelClient, ToolCall
@@ -22,20 +28,64 @@ class AgentResult:
 
 
 class Agent:
-    def __init__(self, cfg: AgentConfig):
+    def __init__(self, cfg: AgentConfig, models_cfg: ModelsConfig | None = None):
         self.cfg = cfg
         self.context = ContextManager(cfg.context)
         self.memory = Memory(
             max_messages=cfg.context.max_history_messages,
             max_tokens=cfg.context.max_history_tokens,
         )
-        self.model = ModelClient(cfg.model)
         self.tools = ToolRegistry(cfg.tools)
+
+        # 模型配置: 优先用传入的 models_cfg, 否则从 cfg.models_file 加载
+        if models_cfg is None:
+            models_cfg = load_models_config(cfg.models_file)
+        self._models_cfg = models_cfg
+        # 启动模型: 优先 cfg.default_model, 否则用 models.yaml 里的 default
+        self._current_model_name = cfg.default_model or models_cfg.default
+        self.model = self._build_model_client(self._current_model_name)
+
         log.info(
-            "Agent '%s' 初始化完成, model=%s, tools=%s",
-            cfg.name, cfg.model.name, self.tools.names(),
+            "Agent '%s' 初始化完成, model=%s (%s), tools=%s",
+            cfg.name, self._current_model_name, self.model.cfg.name, self.tools.names(),
         )
 
+    # ---------- 模型管理 ----------
+    def _build_model_client(self, name: str) -> ModelClient:
+        entry = find_model_entry(self._models_cfg, name)
+        return ModelClient(entry_to_model_config(entry))
+
+    def switch_model(self, name: str) -> str:
+        """切换到指定模型。返回人类可读的状态信息; 失败抛 ValueError。"""
+        if name == self._current_model_name:
+            return f"已经在 {name} 上, 无需切换"
+        new_client = self._build_model_client(name)
+        old = self._current_model_name
+        old_model_name = self.model.cfg.name
+        self.model = new_client
+        self._current_model_name = name
+        return f"已切换: {old} (model: {old_model_name}) → {name} (model: {new_client.cfg.name})"
+
+    def list_models(self) -> list[str]:
+        return [m.name for m in self._models_cfg.models]
+
+    def model_info(self) -> list[dict]:
+        """返回所有模型的摘要, 给 /models 命令展示。"""
+        out = []
+        for m in self._models_cfg.models:
+            out.append({
+                "name": m.name,
+                "model": m.model,
+                "base_url": m.base_url,
+                "current": m.name == self._current_model_name,
+            })
+        return out
+
+    @property
+    def current_model_name(self) -> str:
+        return self._current_model_name
+
+    # ---------- 主循环 ----------
     def chat(self, user_input: str) -> AgentResult:
         self.memory.add_user(user_input)
         tool_calls_made: list[str] = []

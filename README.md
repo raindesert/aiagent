@@ -34,7 +34,8 @@
 
 ```
 aiagent/
-├── agent.yaml              # 唯一配置文件 (提示词/模型/工具)
+├── agent.yaml              # agent 配置 (提示词/工具/模型引用)
+├── models.yaml             # 模型后端配置 (可多个, /model 切换)
 ├── requirements.txt
 ├── cli.py                  # CLI 入口
 ├── main.py                 # cli 别名
@@ -69,16 +70,48 @@ aiagent/
 pip install -r requirements.txt
 ```
 
-### 2. 配置 API Key
+### 2. 配置模型 (models.yaml)
 
-在 `agent.yaml` 里把 `model.api_key` 改成你自己的 key, 或者用环境变量:
+模型配置独立在 `models.yaml`, 可以放多个后端, CLI 里用 `/model <name>` 切换。
 
-```bash
-# Windows PowerShell
+```yaml
+# models.yaml
+default: qwen-local
+
+models:
+  - name: qwen-local            # 别名, CLI 切换用
+    backend: openai
+    model: CPM5-2B              # 上游真实模型名
+    base_url: http://localhost:8080/v1
+    api_key: ${OPENAI_API_KEY}  # 支持 ${ENV_VAR} 占位
+    temperature: 0.7
+    max_tokens: 2048
+    timeout: 300
+    stream: true
+
+  - name: deepseek
+    backend: openai
+    model: deepseek-chat
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+    ...
+```
+
+`agent.yaml` 里只放引用:
+
+```yaml
+agent:
+  models_file: models.yaml     # 指向模型配置
+  default_model: qwen-local     # 启动用哪个, 留空用 models.yaml 里的 default
+  ...
+```
+
+设置环境变量 (Windows PowerShell):
+
+```powershell
 $env:OPENAI_API_KEY = "sk-..."
-
-# 或在 agent.yaml 里用占位符
-# api_key: ${OPENAI_API_KEY}
+$env:DEEPSEEK_API_KEY = "sk-..."
+$env:DASHSCOPE_API_KEY = "sk-..."
 ```
 
 ### 3. 跑起来
@@ -103,11 +136,11 @@ python cli.py --debug
 python cli.py -q
 ```
 
-交互命令: `/quit` 退出, `/reset` 清空对话, `/tools` 列工具。
+交互命令: `/quit` 退出, `/reset` 清空对话, `/tools` 列工具, `/models` 列所有模型, `/model <name>` 切换 (历史保留)。
 
 ## 切换模型后端
 
-`model.base_url` + `model.name` 决定访问哪个端点, 任何 OpenAI 兼容服务都能直接用。
+`models.yaml` 里加新条目即可, 任何 OpenAI 兼容服务都能直接用:
 
 | 服务 | base_url | name 示例 |
 |------|----------|-----------|
@@ -116,6 +149,21 @@ python cli.py -q
 | 通义千问 DashScope (兼容模式) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | Ollama (本地) | `http://localhost:11434/v1` | `qwen2.5:7b-instruct` |
 | llama.cpp server (本地) | `http://localhost:8080/v1` | `local` |
+
+CLI 里切换:
+
+```
+>>> /models
+   qwen-local     CPM5-2B                http://localhost:8080/v1
+ * deepseek       deepseek-chat          https://api.deepseek.com/v1
+   qwen-plus      qwen-plus              https://dashscope.aliyuncs.com/compatible-mode/v1
+   gpt-4o-mini    gpt-4o-mini            https://api.openai.com/v1
+
+>>> /model qwen-plus
+已切换: deepseek (model: deepseek-chat) → qwen-plus (model: qwen-plus)
+```
+
+切换**不**清空对话历史, 新模型能直接看到之前聊的内容。
 
 > Ollama / llama.cpp 启动时会自动暴露 `/v1` 端点, 直接用 OpenAI SDK 调即可。**Tool calling 依赖模型本身支持, 小模型请选 Qwen2.5-7B-Instruct / Hermes-3 / Functionary / CPM5 这类专门微调过的。**
 
@@ -182,28 +230,38 @@ print(f"共 {result.iterations} 轮, 调用了 {result.tool_calls_made}")
 ```
 python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 
-  -c, --config CONFIG    配置文件路径 (默认 agent.yaml)
-  --print-config         打印配置后退出
+  -c, --config CONFIG    agent 配置路径 (默认 agent.yaml)
+  --print-config         打印 agent 配置后退出
   -v, --verbose          显示 INFO 级日志 (默认隐藏, 含每次 tool call)
   --debug                显示 DEBUG 级日志 (排查问题用)
   -q, --quiet            只显示 ERROR 及以上 (静默模式)
   -m, --message MESSAGE  单轮模式: 直接发一条消息并打印回答
 ```
 
+交互内命令:
+
+| 命令 | 作用 |
+|------|------|
+| `/quit` `/exit` `:q` | 退出 |
+| `/reset` | 清空对话历史 (不动模型切换) |
+| `/tools` | 列出可用工具 |
+| `/models` | 列出所有配置的模型后端 (带 `*` 标记当前) |
+| `/model` | 显示当前模型 |
+| `/model <name>` | 切换到指定模型 (历史保留) |
+
 ## 配置字段说明
+
+### `agent.yaml`
 
 | 字段 | 说明 |
 |------|------|
 | `agent.name` | 仅用于日志/CLI banner |
+| `models_file` | 指向 `models.yaml`, 默认 `models.yaml` |
+| `default_model` | 启动用哪个, 留空用 `models.yaml` 里的 `default` |
 | `context.system_prompt.template` | 系统提示词模板 |
 | `context.system_prompt.variables` | 模板变量, 运行时可覆盖 |
 | `context.max_history_messages` | 记忆里最多保留多少条消息 |
 | `context.max_history_tokens` | 粗略 token 预算, 超出截断 |
-| `model.backend` | 当前仅 `openai` |
-| `model.name` | 模型名 |
-| `model.base_url` | API 端点 |
-| `model.api_key` | API key, 支持 `${ENV_VAR}` 占位 |
-| `model.temperature` / `max_tokens` / `timeout` / `stream` | 标准参数 |
 | `tools[].name` | 工具名 (全英文, 模型用此调用) |
 | `tools[].description` | 工具描述 (模型靠这个判断何时调用) |
 | `tools[].enabled` | 是否启用 |
@@ -211,6 +269,18 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 | `tools[].handler` | 形如 `pkg.mod:func` 的可调用对象路径 |
 | `loop.max_iterations` | 防止 tool call 死循环 |
 | `loop.tool_timeout` | 单个 tool 调用的最长秒数 |
+
+### `models.yaml`
+
+| 字段 | 说明 |
+|------|------|
+| `default` | 默认激活的模型名 (在 models 列表里) |
+| `models[].name` | 别名, CLI `/model <name>` 切换用 |
+| `models[].backend` | 当前仅 `openai` |
+| `models[].model` | 上游真实模型名 (发给 API 的) |
+| `models[].base_url` | API 端点 |
+| `models[].api_key` | API key, 支持 `${ENV_VAR}` 占位 |
+| `models[].temperature` / `max_tokens` / `timeout` / `stream` | 标准参数 |
 
 ## 已知限制 (MVP)
 
