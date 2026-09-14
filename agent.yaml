@@ -3,7 +3,7 @@ agent:
 
 # 模型配置独立到 models.yaml, 这里只放引用
 models_file: models.yaml             # 指向模型配置文件
-default_model: qwen-local            # 启动时用哪个 (留空则用 models.yaml 里的 default)
+default_model: local            # 启动时用哪个 (留空则用 models.yaml 里的 default)
 
 context:
   system_prompt:
