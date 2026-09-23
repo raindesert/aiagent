@@ -221,25 +221,9 @@ def main() -> int:
         def _on_token(t: str) -> None:
             print(t, end="", flush=True, file=_sys.stderr)
 
-        # 空 token 缓冲, text-only 路径的换行补在结尾
         result = agent.chat(user_input, on_token=_on_token)
-        # 补换行: 如果有 stderr 输出 (流式) 或 content 非空
-        if result.content or (agent.model.cfg.stream and not result.tool_calls_made):
-            print(file=_sys.stderr)  # stderr 末尾换行
-        print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
-
-        # ---- 正常对话 (流式) ----
-        # on_token 逐 token 写到 stderr (避免干扰 stdout 抓取)
-        # 流式只在模型走 .stream=True 配置时生效; 非流式模型 on_token 被忽略
-        import sys as _sys
-
-        def _on_token(t: str) -> None:
-            print(t, end="", flush=True, file=_sys.stderr)
-
-        # 空 token 缓冲, text-only 路径的换行补在结尾
-        result = agent.chat(user_input, on_token=_on_token)
-        # 补换行: 如果有 stderr 输出 (流式) 或 content 非空
-        if result.content or (agent.model.cfg.stream and not result.tool_calls_made):
+        # 补换行: 流式 token 不带结尾换行, 而用了工具时压根没有 token 输出
+        if result.content or agent.model.cfg.stream:
             print(file=_sys.stderr)  # stderr 末尾换行
         print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
 

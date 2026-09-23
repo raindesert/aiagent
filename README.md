@@ -16,7 +16,7 @@
 - **工具沙箱** —— 每个工具独立超时, 异常被捕获并以 tool message 形式回喂
 - **可扩展** —— 新增工具只需写函数 + 在 yaml 里加一段配置
 
-## 已实现工具 (10 个)
+## 已实现工具 (12 个)
 
 | 工具 | 能力 |
 |------|------|
@@ -40,6 +40,8 @@ aiagent/
 ├── agent.yaml              # agent 配置 (提示词/工具/模型引用)
 ├── models.yaml             # 模型后端配置 (可多个, /model 切换)
 ├── requirements.txt
+├── requirements-dev.txt    # 测试依赖 (pytest)
+├── pytest.ini              # 测试配置 + e2e / network 标记
 ├── cli.py                  # CLI 入口
 ├── main.py                 # cli 别名
 ├── README.md
@@ -49,20 +51,30 @@ aiagent/
 │   ├── config.py           # Pydantic 配置模型 + ${ENV} 展开
 │   ├── context.py          # 上下文/系统提示管理
 │   ├── memory.py           # 多轮对话记忆 + 截断
+│   ├── memory_store.py     # SQLite 持久化 session
 │   ├── model.py            # OpenAI 兼容模型客户端 (流式 + 工具调用)
-│   ├── tools.py            # 工具注册表 (schema + 执行 + 必填校验)
+│   ├── tools.py            # 工具注册表 (schema + 执行 + 必填校验 + 超时)
 │   └── core.py             # Agent 主循环 (ReAct + tool call)
-└── tools/                  # 工具实现
-    ├── time.py             # get_current_time
-    ├── weather.py          # get_weather (wttr.in)
-    ├── search_files.py     # search_files
-    ├── rabbit.py           # send_rabbit_message
-    ├── shell.py            # run_shell
-    ├── files.py            # read_file / write_file / edit_file
-    ├── web.py              # web_fetch (HTML→text)
-    ├── http.py             # http_request
-    ├── grep.py             # grep_search
-    └── python_run.py       # python_run
+├── tools/                  # 工具实现
+│   ├── time.py             # get_current_time
+│   ├── weather.py          # get_weather (wttr.in)
+│   ├── search_files.py     # search_files
+│   ├── rabbit.py           # send_rabbit_message
+│   ├── shell.py            # run_shell
+│   ├── files.py            # read_file / write_file / edit_file
+│   ├── web.py              # web_fetch (HTML→text)
+│   ├── http.py             # http_request
+│   ├── grep.py             # grep_search
+│   └── python_run.py       # python_run
+└── tests/                  # pytest 套件 (见下文"测试")
+    ├── conftest.py         # fixture: 配置 / 临时 db / 本地模型可用性
+    ├── fakes.py            # 脚本化假模型
+    ├── test_config.py      # 配置加载 + system prompt
+    ├── test_memory.py      # 截断 + SQLite 持久化
+    ├── test_tools.py       # 12 个工具 + 注册表防护
+    ├── test_agent_loop.py  # 主循环 / session / 模型切换 (假模型)
+    ├── test_cli.py         # CLI 斜杠命令 + 回归
+    └── test_e2e_local_model.py  # 真模型端到端
 ```
 
 ## 快速开始
@@ -103,10 +115,10 @@ models:
 `agent.yaml` 里只放引用:
 
 ```yaml
-agent:
-  models_file: models.yaml     # 指向模型配置
-  default_model: qwen-local     # 启动用哪个, 留空用 models.yaml 里的 default
-  ...
+# 注意: 这些字段是顶层的, 不要缩进到 `agent:` 下面 (那一段会被静默忽略)
+models_file: models.yaml       # 指向模型配置
+default_model: qwen-local      # 启动用哪个, 留空用 models.yaml 里的 default
+...
 ```
 
 设置环境变量 (Windows PowerShell):
@@ -307,6 +319,25 @@ agent = Agent(cfg, store=store, session_id="proj1")
 | `models[].base_url` | API 端点 |
 | `models[].api_key` | API key, 支持 `${ENV_VAR}` 占位 |
 | `models[].temperature` / `max_tokens` / `timeout` / `stream` | 标准参数 |
+
+## 测试
+
+```bash
+pip install -r requirements-dev.txt
+
+pytest                     # 离线套件 (假模型), 不碰任何外部服务
+pytest -m e2e              # 端到端: 真模型 + 真工具 + 真 SQLite (模型服务没起会自动 skip)
+pytest -m network          # 需要外网的用例 (wttr.in)
+pytest -m "e2e or network" -v
+```
+
+约定:
+
+- `xfail(strict)` 的用例 = 已知缺陷, 修好了会变 XPASS 报错提醒; 当前 4 个:
+  `agent.yaml` 的 `agent:` 块被忽略、未设置的 `${ENV}` 占位符被当成 api_key、
+  `auto-` 前缀的 session 标题改不掉、PowerShell 报错文本被 CLIXML 清理时一并丢掉
+- 工具类用例全部通过 `ToolRegistry.execute` 走真实路径 (含超时/必填校验), 不直接调函数
+- 写文件/跑命令的用例一律在 `tmp_path` 里, 危险命令只测拦截器本身, 不执行
 
 ## 已知限制 (MVP)
 

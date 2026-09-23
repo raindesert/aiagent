@@ -93,13 +93,17 @@ class ToolRegistry:
             )
 
         handler = self._handlers[name]
+        # 不能用 with: ThreadPoolExecutor.__exit__ 会 shutdown(wait=True), 超时后照样阻塞到
+        # handler 自己跑完, "超时"就成了假信号. 线程无法强杀, 但至少主循环立刻拿到错误.
+        pool = ThreadPoolExecutor(max_workers=1)
         try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(handler, **args)
-                try:
-                    out = future.result(timeout=timeout)
-                except FutTimeout:
-                    return ToolResult(ok=False, error=f"执行超时 ({timeout}s)")
+            future = pool.submit(handler, **args)
+            try:
+                out = future.result(timeout=timeout)
+            except FutTimeout:
+                return ToolResult(ok=False, error=f"执行超时 ({timeout}s)")
         except Exception:
             return ToolResult(ok=False, error=traceback.format_exc(limit=3))
+        finally:
+            pool.shutdown(wait=False)
         return ToolResult(ok=True, output=out)

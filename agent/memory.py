@@ -83,21 +83,32 @@ class Memory:
                 total += Message.estimate_tokens(json.dumps(m.tool_calls, ensure_ascii=False))
         return total
 
+    def _units(self) -> list[list[Message]]:
+        """把消息切成原子组: assistant(tool_calls) 和它的 tool 结果必须同生共死。"""
+        units: list[list[Message]] = []
+        for m in self._messages:
+            parent_open = (
+                m.role == "tool"
+                and units
+                and units[-1][-1].role in ("assistant", "tool")
+                and any(x.role == "assistant" and x.tool_calls for x in units[-1])
+            )
+            if parent_open:
+                units[-1].append(m)
+            else:
+                units.append([m])
+        return units
+
     def _truncate(self) -> None:
         # 先按消息数
         if len(self._messages) > self.max_messages:
-            # 永远保留最前面 1 条 user 消息 (如果存在), 否则从最老的开始丢
             self._messages = self._messages[-self.max_messages :]
-        # 再按 token 预算: 从最老开始丢, 但不要把 tool 消息和它的 assistant 拆开
+        # 再按 token 预算: 从最老的整组开始丢, 不把 assistant(tool_calls) 和它的 tool 结果拆开
         while self._messages and self._approx_tokens() > self.max_tokens:
-            # 找到第一个可以丢的位置: 跳过紧跟在 assistant(tool_calls) 后面的 tool 消息
-            drop_idx = 0
-            for i, m in enumerate(self._messages):
-                if m.role == "tool":
-                    # 必须先丢产生它的 assistant
-                    continue
-                drop_idx = i
+            units = self._units()
+            if len(units) <= 1:
                 break
-            else:
-                break
-            self._messages.pop(drop_idx)
+            self._messages = self._messages[len(units[0]) :]
+        # 兜底: 任何情况下都不把孤立 tool 消息留在开头, 否则 OpenAI 兼容后端会 400
+        while self._messages and self._messages[0].role == "tool":
+            self._messages.pop(0)
