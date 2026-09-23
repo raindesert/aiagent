@@ -10,6 +10,9 @@
 - **OpenAI 兼容协议** —— 一行配置切换 OpenAI / DeepSeek / 通义 / Ollama / llama.cpp server
 - **原生 function calling** —— 用模型原生的 `tool_calls` 字段, 工具定义用 JSON Schema
 - **多轮记忆** —— 滚动窗口 + 粗略 token 预算, 超出自动截断
+- **持久化记忆** —— SQLite 存对话历史, 跨 session / 跨重启保留 (`/session` 管理)
+- **流式输出** —— 模型回答时逐 token 实时显示
+- **多模型切换** —— 在 `models.yaml` 配多个后端, 交互中 `/model <name>` 切换
 - **工具沙箱** —— 每个工具独立超时, 异常被捕获并以 tool message 形式回喂
 - **可扩展** —— 新增工具只需写函数 + 在 yaml 里加一段配置
 
@@ -136,7 +139,7 @@ python cli.py --debug
 python cli.py -q
 ```
 
-交互命令: `/quit` 退出, `/reset` 清空对话, `/tools` 列工具, `/models` 列所有模型, `/model <name>` 切换 (历史保留)。
+交互命令: `/quit` 退出, `/reset` 清空对话, `/tools` 列工具, `/models` 列所有模型, `/model <name>` 切换 (历史保留), `/session` 管理持久化 session。
 
 ## 切换模型后端
 
@@ -236,16 +239,41 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
   -m, --message MESSAGE  单轮模式: 直接发一条消息并打印回答
 ```
 
-交互内命令:
+交互命令:
 
 | 命令 | 作用 |
 |------|------|
 | `/quit` `/exit` `:q` | 退出 |
-| `/reset` | 清空对话历史 (不动模型切换) |
+| `/reset` | 清空当前 session 的对话历史 |
 | `/tools` | 列出可用工具 |
 | `/models` | 列出所有配置的模型后端 (带 `*` 标记当前) |
 | `/model` | 显示当前模型 |
 | `/model <name>` | 切换到指定模型 (历史保留) |
+| `/session` | 显示当前 session |
+| `/session list` | 列出所有持久化的 session |
+| `/session new [name]` | 开新 session (旧 session 自动保存) |
+| `/session switch <id>` | 切换到指定 session |
+| `/session save [title]` | 手动保存当前 session (可选标题) |
+
+## 流式输出 + 持久化记忆
+
+**流式**: 模型回答时**逐 token 实时显示**到 stderr, 不再等整段生成完。
+内部 `ModelClient.chat_streaming(messages, tools, on_token)` 接受回调。
+非流式模型 (`stream=false`) 自动降级到一次性输出。
+
+**持久化**: 对话历史存到 SQLite (`~/.aiagent/memory.db`), 跨重启 / 跨 session 保留。每次 `chat()` 后自动 save, 启动时自动加载。
+
+```python
+from agent import Agent, load_config, MemoryStore
+
+cfg = load_config("agent.yaml")
+store = MemoryStore("~/.aiagent/memory.db")  # 默认路径, 可改
+agent = Agent(cfg, store=store, session_id="proj1")
+# 启动时如果 proj1 已有历史, 自动加载; 否则从空开始
+```
+
+`session_id` 是任意字符串 (项目名 / 任务名 / 用户名都行)。
+`agent.switch_session("other-id")` 在不同 session 间切换, 类似浏览器标签页。
 
 ## 配置字段说明
 

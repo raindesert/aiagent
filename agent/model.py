@@ -73,8 +73,33 @@ class ModelClient:
             kwargs["tool_choice"] = "auto"
 
         if self.cfg.stream:
-            return self._chat_stream(kwargs)
+            return self._chat_stream(kwargs, on_token=None)
         return self._chat_blocking(kwargs)
+
+    def chat_streaming(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        on_token: callable | None = None,
+    ) -> ModelResponse:
+        """流式调用 + 回调。每次模型产出新 token 时调用 on_token(text)。
+        返回完整的 ModelResponse (含 tool_calls 和 usage)。
+
+        Args:
+            messages: OpenAI 格式的消息列表。
+            tools: 可选的工具 schema。
+            on_token: 接收 (str) 的回调; None 表示静默 (仅缓冲)。
+        """
+        kwargs: dict[str, Any] = {
+            "model": self.cfg.name,
+            "messages": messages,
+            "temperature": self.cfg.temperature,
+            "max_tokens": self.cfg.max_tokens,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        return self._chat_stream(kwargs, on_token=on_token)
 
     def chat_stream_tokens(
         self,
@@ -128,8 +153,13 @@ class ModelClient:
             usage=usage,
         )
 
-    def _chat_stream(self, kwargs: dict[str, Any]) -> ModelResponse:
-        """流式: 仍然要把 tool_calls 收齐再返回, 内容部分边收边打印。"""
+    def _chat_stream(
+        self,
+        kwargs: dict[str, Any],
+        on_token: callable | None = None,
+    ) -> ModelResponse:
+        """流式: 仍然要把 tool_calls 收齐再返回, 内容部分通过 on_token 回调逐 token 通知。
+        若 on_token 为 None 则只缓冲不打印 (保持向后兼容 chat() 调用)。"""
         kwargs["stream"] = True
         kwargs["stream_options"] = {"include_usage": True}
         stream = self.client.chat.completions.create(**kwargs)
@@ -156,8 +186,12 @@ class ModelClient:
             piece = getattr(delta, "content", None)
             if piece:
                 content_buf.append(piece)
-                # 写到 stderr, 避免干扰 stdout 抓取
-                print(piece, end="", flush=True, file=__import__("sys").stderr)
+                if on_token is not None:
+                    try:
+                        on_token(piece)
+                    except Exception:
+                        # 回调异常不影响主流程
+                        pass
             for tc in (getattr(delta, "tool_calls", None) or []):
                 idx = tc.index if tc.index is not None else 0
                 slot = tool_buf.setdefault(idx, {"id": "", "name": "", "arguments": ""})
@@ -169,8 +203,8 @@ class ModelClient:
                     if tc.function.arguments:
                         slot["arguments"] += tc.function.arguments
 
-        if content_buf and not finish_reason:
-            # 结束换行
+        # 无 on_token 时 (chat() 路径), 走旧的 stderr 行为 (兼容已有调用)
+        if on_token is None and content_buf and not finish_reason:
             print(file=__import__("sys").stderr)
 
         tool_calls: list[ToolCall] = []

@@ -7,12 +7,17 @@
     python cli.py -m "现在几点了?"         # 单轮模式, 输出回答后退出
 
 交互命令:
-    /quit, /exit, :q       退出
-    /reset                  清空对话历史
-    /tools                  列出可用工具
-    /models                 列出所有配置的模型后端
-    /model                  显示当前激活的模型
-    /model <name>           切换到指定模型 (历史保留)
+    /quit, /exit, :q          退出
+    /reset                     清空当前 session 的对话历史
+    /tools                     列出可用工具
+    /models                    列出所有配置的模型后端
+    /model                     显示当前激活的模型
+    /model <name>              切换到指定模型 (历史保留)
+    /session                   显示当前 session
+    /session list              列出所有持久化的 session
+    /session new [name]        开新 session (旧 session 自动保存)
+    /session switch <id>       切换到指定 session
+    /session save              手动保存当前 session
 """
 from __future__ import annotations
 
@@ -27,24 +32,27 @@ from agent import Agent, load_config
 BANNER = """\
 =============================================
   {name}
-  model: {model}  ({base_url})
-  tools: {tool_count} 个
-  命令: /quit /reset /tools /models /model [name]
+  model:   {model}  ({base_url})
+  session: {session}
+  tools:   {tool_count} 个
+  命令: /quit /reset /tools /models /model [name] /session
 =============================================
 """
 
 
-def _print_banner(cfg, current_name: str) -> None:
+def _print_banner(cfg, current_name: str, session_id: str, history_count: int) -> None:
     base_url = ""
     for m in cfg._models_cfg.models if hasattr(cfg, "_models_cfg") else []:
         if m.name == current_name:
             base_url = m.base_url
             break
+    session_str = f"{session_id} ({history_count} 条历史)" if session_id else "(无持久化)"
     print(
         BANNER.format(
             name=cfg.name,
             model=current_name,
             base_url=base_url or "?",
+            session=session_str,
             tool_count=len(cfg.tools),
         )
     )
@@ -94,7 +102,9 @@ def main() -> int:
         return 0
 
     try:
-        agent = Agent(cfg)
+        from agent import MemoryStore
+        store = MemoryStore("~/.aiagent/memory.db")
+        agent = Agent(cfg, store=store, session_id="default")
     except ValueError as e:
         print(f"初始化失败: {e}", file=sys.stderr)
         print(
@@ -109,7 +119,7 @@ def main() -> int:
     models_cfg = load_models_config(cfg.models_file)
     cfg._models_cfg = models_cfg  # 临时挂一下, banner 用
 
-    _print_banner(cfg, agent.current_model_name)
+    _print_banner(cfg, agent.current_model_name, agent.session_id, len(agent.memory.messages()))
 
     if args.message is not None:
         result = agent.chat(args.message)
@@ -160,9 +170,77 @@ def main() -> int:
                 print(f"切换失败: {e}")
                 print("用 /models 列出可用模型")
             continue
+        if user_input == "/session" or user_input.startswith("/session "):
+            parts = user_input.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            sub = arg.split(maxsplit=1)
+            verb = sub[0] if sub else ""
+            rest = sub[1] if len(sub) > 1 else ""
+            if verb in ("", "show"):
+                print(f"当前 session: {agent.session_id} ({len(agent.memory.messages())} 条历史)")
+                continue
+            if verb == "list":
+                sessions = agent.list_sessions()
+                if not sessions:
+                    print("(没有持久化的 session)")
+                else:
+                    for s in sessions:
+                        marker = " *" if s["session_id"] == agent.session_id else "  "
+                        print(f"{marker} {s['session_id']:<14} {s['msg_count']:>3} 条  {s['updated_at']}  {s['title']}")
+                continue
+            if verb == "new":
+                try:
+                    print(agent.new_session(rest.strip() or None))
+                except Exception as e:
+                    print(f"新建 session 失败: {e}")
+                continue
+            if verb == "switch":
+                if not rest:
+                    print("用法: /session switch <id>")
+                    continue
+                try:
+                    print(agent.switch_session(rest.strip()))
+                except Exception as e:
+                    print(f"切换失败: {e}")
+                continue
+            if verb == "save":
+                try:
+                    agent.save(title=rest.strip() or None)
+                    print(f"已保存 session '{agent.session_id}'")
+                except Exception as e:
+                    print(f"保存失败: {e}")
+                continue
+            print(f"未知子命令: {verb!r} (支持: list / new / switch / save)")
+            continue
 
-        # ---- 正常对话 ----
-        result = agent.chat(user_input)
+        # ---- 正常对话 (流式) ----
+        # on_token 逐 token 写到 stderr (避免干扰 stdout 抓取)
+        # 流式只在模型走 .stream=True 配置时生效; 非流式模型 on_token 被忽略
+        import sys as _sys
+
+        def _on_token(t: str) -> None:
+            print(t, end="", flush=True, file=_sys.stderr)
+
+        # 空 token 缓冲, text-only 路径的换行补在结尾
+        result = agent.chat(user_input, on_token=_on_token)
+        # 补换行: 如果有 stderr 输出 (流式) 或 content 非空
+        if result.content or (agent.model.cfg.stream and not result.tool_calls_made):
+            print(file=_sys.stderr)  # stderr 末尾换行
+        print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
+
+        # ---- 正常对话 (流式) ----
+        # on_token 逐 token 写到 stderr (避免干扰 stdout 抓取)
+        # 流式只在模型走 .stream=True 配置时生效; 非流式模型 on_token 被忽略
+        import sys as _sys
+
+        def _on_token(t: str) -> None:
+            print(t, end="", flush=True, file=_sys.stderr)
+
+        # 空 token 缓冲, text-only 路径的换行补在结尾
+        result = agent.chat(user_input, on_token=_on_token)
+        # 补换行: 如果有 stderr 输出 (流式) 或 content 非空
+        if result.content or (agent.model.cfg.stream and not result.tool_calls_made):
+            print(file=_sys.stderr)  # stderr 末尾换行
         print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
 
 

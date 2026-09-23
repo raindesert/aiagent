@@ -11,6 +11,7 @@ from .config import (
 )
 from .core import Agent, AgentResult
 from .memory import Memory, Message
+from .memory_store import MemoryStore
 from .model import ModelClient, ModelResponse, ToolCall
 from .tools import ToolRegistry, ToolResult
 
@@ -19,6 +20,7 @@ __all__ = [
     "AgentConfig",
     "AgentResult",
     "Memory",
+    "MemoryStore",
     "Message",
     "ModelClient",
     "ModelConfig",
