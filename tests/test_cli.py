@@ -149,13 +149,43 @@ def test_interactive_mode_calls_chat_once_per_input(cli_env, monkeypatch, capsys
     feed(monkeypatch, ["第一句", "第二句", "/quit"])
     assert run_cli(monkeypatch, []) == 0
     assert cli_env[0].chat_calls == ["第一句", "第二句"]
+    assert "[iter=" not in capsys.readouterr().out, "默认不该显示轮次统计行"
+
+
+def test_single_shot_message_mode_prints_answer(cli_env, monkeypatch, capsys):
+    assert run_cli(monkeypatch, ["-m", "说句话"]) == 0
+    assert cli_env[0].chat_calls == ["说句话"]
+    out = capsys.readouterr().out
+    assert "答案" in out, "单轮模式要把回答打到 stdout"
+    assert "[iter=" not in out
+
+
+def test_banner_hidden_by_default(cli_env, monkeypatch, capsys):
+    feed(monkeypatch, ["/quit"])
+    assert run_cli(monkeypatch, []) == 0
+    out = capsys.readouterr().out
+    assert "=====" not in out and "tools:" not in out, "默认不打印 banner"
+
+
+@pytest.mark.parametrize("flag", ["-v", "--debug"])
+def test_banner_shown_with_verbose(cli_env, monkeypatch, capsys, flag):
+    feed(monkeypatch, ["/quit"])
+    assert run_cli(monkeypatch, [flag]) == 0
+    out = capsys.readouterr().out
+    assert "=====" in out and "tools:" in out
+
+
+@pytest.mark.parametrize("flag", ["-v", "--debug"])
+def test_iteration_stats_only_with_verbose(cli_env, monkeypatch, capsys, flag):
+    """轮次统计行 ([iter=N tools=[...]]) 归 -v 管, 默认不打扰正常对话。"""
+    feed(monkeypatch, ["第一句", "第二句", "/quit"])
+    assert run_cli(monkeypatch, [flag]) == 0
     out = capsys.readouterr().out
     assert out.count("[iter=1 tools=[]]") == 2, "每条输入只应打印一次状态行"
 
 
-def test_single_shot_message_mode(cli_env, monkeypatch, capsys):
-    assert run_cli(monkeypatch, ["-m", "说句话"]) == 0
-    assert cli_env[0].chat_calls == ["说句话"]
+def test_iteration_stats_in_message_mode_with_verbose(cli_env, monkeypatch, capsys):
+    assert run_cli(monkeypatch, ["-v", "-m", "说句话"]) == 0
     assert "[iter=1 tools=[]]" in capsys.readouterr().out
 
 

@@ -245,7 +245,7 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 
   -c, --config CONFIG    agent 配置路径 (默认 agent.yaml)
   --print-config         打印 agent 配置后退出
-  -v, --verbose          显示 INFO 级日志 (默认隐藏, 含每次 tool call)
+  -v, --verbose          显示 INFO 级日志 + 启动 banner + 每轮 [iter=N tools=[...]] 统计行 (默认都不显示)
   --debug                显示 DEBUG 级日志 (排查问题用)
   -q, --quiet            只显示 ERROR 及以上 (静默模式)
   -m, --message MESSAGE  单轮模式: 直接发一条消息并打印回答

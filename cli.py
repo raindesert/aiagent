@@ -90,6 +90,8 @@ def main() -> int:
     else:
         level = logging.WARNING
     logging.basicConfig(level=level, format="[%(levelname)s] %(name)s: %(message)s")
+    # banner + 每轮 [iter=N tools=[...]] 统计行都归 -v / --debug 管
+    show_stats = level <= logging.INFO
 
     cfg_path = Path(args.config)
     if not cfg_path.exists():
@@ -119,13 +121,17 @@ def main() -> int:
     models_cfg = load_models_config(cfg.models_file)
     cfg._models_cfg = models_cfg  # 临时挂一下, banner 用
 
-    _print_banner(cfg, agent.current_model_name, agent.session_id, len(agent.memory.messages()))
+    if show_stats:
+        _print_banner(cfg, agent.current_model_name, agent.session_id, len(agent.memory.messages()))
 
     if args.message is not None:
         result = agent.chat(args.message)
-        if not result.content:
+        if result.content:
+            print(result.content)
+        else:
             print("(模型未返回文本)")
-        print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
+        if show_stats:
+            print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
         return 0
 
     # 交互模式
@@ -225,7 +231,8 @@ def main() -> int:
         # 补换行: 流式 token 不带结尾换行, 而用了工具时压根没有 token 输出
         if result.content or agent.model.cfg.stream:
             print(file=_sys.stderr)  # stderr 末尾换行
-        print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
+        if show_stats:
+            print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
 
 
 if __name__ == "__main__":
