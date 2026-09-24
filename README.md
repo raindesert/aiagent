@@ -13,6 +13,7 @@
 - **持久化记忆** —— SQLite 存对话历史, 跨 session / 跨重启保留 (`/session` 管理)
 - **流式输出** —— 模型回答时逐 token 实时显示
 - **多模型切换** —— 在 `models.yaml` 配多个后端, 交互中 `/model <name>` 切换
+- **Web UI** —— `python -m streamlit run ui.py`, 浏览器里对话 + 流式显示 + 侧边栏切模型/管会话
 - **工具沙箱** —— 每个工具独立超时, 异常被捕获并以 tool message 形式回喂
 - **可扩展** —— 新增工具只需写函数 + 在 yaml 里加一段配置
 
@@ -43,6 +44,7 @@ aiagent/
 ├── requirements-dev.txt    # 测试依赖 (pytest)
 ├── pytest.ini              # 测试配置 + e2e / network 标记
 ├── cli.py                  # CLI 入口
+├── ui.py                   # Web UI 入口 (streamlit)
 ├── main.py                 # cli 别名
 ├── README.md
 ├── .gitignore
@@ -54,6 +56,7 @@ aiagent/
 │   ├── memory_store.py     # SQLite 持久化 session
 │   ├── model.py            # OpenAI 兼容模型客户端 (流式 + 工具调用)
 │   ├── tools.py            # 工具注册表 (schema + 执行 + 必填校验 + 超时)
+│   ├── ui_support.py       # Web UI 纯逻辑 (消息视图 + 流式转次), 不依赖 streamlit
 │   └── core.py             # Agent 主循环 (ReAct + tool call)
 ├── tools/                  # 工具实现
 │   ├── time.py             # get_current_time
@@ -132,7 +135,7 @@ $env:MS_API_KEY = "sk-..."
 ### 3. 跑起来
 
 ```bash
-# 交互模式 (默认 WARNING 级别, 不打 INFO 日志)
+# 交互模式 (不打 banner / INFO 日志 / 每轮统计, 这些统一归 -v)
 python cli.py
 
 # 单轮
@@ -152,6 +155,28 @@ python cli.py -q
 ```
 
 交互命令: `/quit` 退出, `/reset` 清空对话, `/tools` 列工具, `/models` 列所有模型, `/model <name>` 切换 (历史保留), `/session` 管理持久化 session。
+
+### 4. 浏览器里聊 (Web UI)
+
+```bash
+pip install -r requirements.txt        # streamlit 在里面
+
+python -m streamlit run ui.py                              # 默认端口 8501
+python -m streamlit run ui.py --server.port 8601           # 换端口
+python -m streamlit run ui.py --server.headless true       # 服务器上跑, 不自动开浏览器
+```
+
+> 用 `python -m streamlit` 而不是裸 `streamlit`: pip 在没有管理员权限时会把包装到用户目录
+> (`%APPDATA%\Python\PythonX.Y\site-packages`), 那个 `Scripts` 目录通常不在 PATH 里, 于是
+> `streamlit` 命令报"无法识别"。想直接用裸命令就把该目录加进 PATH:
+> `$env:PATH += ";$env:APPDATA\Python\Python313\Scripts"` (或写进注册表 User PATH 永久生效)。
+
+UI 和 CLI 共用同一份 `agent.yaml` + `models.yaml` + `~/.aiagent/memory.db`, 所以命令行聊到一半的 session 网页上能接着聊, 反过来也一样。
+
+- **侧边栏**: 改配置路径、下拉切模型、session 下拉 (列出/切换) + 新建/清空按钮、展开看工具列表和渲染后的系统提示词
+- **聊天区**: 用户/助手气泡; 工具调用和结果折叠在 expander 里 (结果超长截断显示), 模型配 `stream: true` 时逐 token 刷新
+- **统计**: `iter=N tools=[...]` 默认不显示, 勾上侧边栏"显示每轮 iter/工具统计"才有 (对应 CLI 的 `-v`)
+- 以 `/` 开头的输入在网页端不当命令解析 (那些操作都做成按钮了), 会提示改用侧边栏
 
 ## 切换模型后端
 
@@ -337,6 +362,8 @@ pytest -m "e2e or network" -v
   `agent.yaml` 的 `agent:` 块被忽略、未设置的 `${ENV}` 占位符被当成 api_key、
   `auto-` 前缀的 session 标题改不掉、PowerShell 报错文本被 CLIXML 清理时一并丢掉
 - 工具类用例全部通过 `ToolRegistry.execute` 走真实路径 (含超时/必填校验), 不直接调函数
+- `test_ui.py` 用 streamlit 自带的 `AppTest` 无头执行 `ui.py` 来验渲染和侧边栏 (没装 streamlit 会自动 skip);
+  真发消息那条标了 `e2e`, 且把 `HOME`/`USERPROFILE` 指到 `tmp_path`, 不碰用户真实的 `~/.aiagent/memory.db`
 - 写文件/跑命令的用例一律在 `tmp_path` 里, 危险命令只测拦截器本身, 不执行
 
 ## 已知限制 (MVP)
