@@ -117,6 +117,51 @@ def test_edit_file_guards(run, tmp_path):
     assert "文件不存在" in ok_str(run("edit_file", {"path": str(tmp_path / "no.txt"), "old": "a", "new": "b"}))
 
 
+# ---------- 行尾 / 编码 (回归: 之前会静默改坏文件) ----------
+def test_write_file_keeps_lf(run, tmp_path):
+    """回归: open(..., "w") 在 Windows 上把 \\n 写成 \\r\\n, 写 LF 文件的调用方会中招。"""
+    f = tmp_path / "lf.txt"
+    ok_str(run("write_file", {"path": str(f), "content": "a\nb\n"}))
+    assert f.read_bytes() == b"a\nb\n"
+
+
+def test_edit_file_keeps_line_endings(run, tmp_path):
+    """回归: 编辑 LF 文件后整个文件被转成 CRLF, git diff 变成整文件重写。"""
+    lf = tmp_path / "lf.txt"
+    lf.write_bytes(b"alpha\nbeta\ngamma\n")
+    ok_str(run("edit_file", {"path": str(lf), "old": "beta", "new": "BETA"}))
+    assert lf.read_bytes() == b"alpha\nBETA\ngamma\n"
+
+    crlf = tmp_path / "crlf.txt"
+    crlf.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+    ok_str(run("edit_file", {"path": str(crlf), "old": "beta", "new": "BETA"}))
+    assert crlf.read_bytes() == b"alpha\r\nBETA\r\ngamma\r\n"
+
+
+def test_edit_file_multiline_old_matches_crlf_file(run, tmp_path):
+    """模型给的 old 用 \\n, 目标文件是 CRLF, 也要能匹配上。"""
+    f = tmp_path / "crlf2.txt"
+    f.write_bytes(b"one\r\ntwo\r\nthree\r\n")
+    out = ok_str(run("edit_file", {"path": str(f), "old": "one\ntwo", "new": "1\n2"}))
+    assert f.read_bytes() == b"1\r\n2\r\nthree\r\n", out
+
+
+def test_edit_file_refuses_non_utf8_file(run, tmp_path):
+    """回归: 旧实现用 errors="replace" 读进来, ASCII 的 old 能匹配, 写回就写坏了 GBK 内容。"""
+    f = tmp_path / "gbk.py"
+    original = "# 中文注释\nprint('你好')\n".encode("gbk")
+    f.write_bytes(original)
+    out = ok_str(run("edit_file", {"path": str(f), "old": "print", "new": "print('x')"}))
+    assert "不是 UTF-8" in out
+    assert f.read_bytes() == original, "拒绝执行时不能改动文件"
+
+
+def test_read_file_flags_non_utf8(run, tmp_path):
+    f = tmp_path / "gbk.txt"
+    f.write_bytes("中文\n".encode("gbk"))
+    assert "非 UTF-8" in ok_str(run("read_file", {"path": str(f)}))
+
+
 # ---------- grep_search ----------
 def test_grep_returns_file_line_snippet(run):
     out = ok_str(run("grep_search", {"pattern": r"def read_file", "path": "tools", "glob": "*.py"}))
@@ -270,6 +315,39 @@ def test_http_request_validation(run):
     assert "不能为空" in ok_str(run("http_request", {"method": "", "url": "http://x/"}))
     assert "不能为空" in ok_str(run("http_request", {"method": "GET", "url": " "}))
     assert "正整数" in ok_str(run("http_request", {"method": "GET", "url": "http://x/", "timeout": 0}))
+
+
+# ---------- 下载上限 / 解码 (回归: 之前整个 body 进内存) ----------
+@pytest.fixture(scope="module")
+def big_server():
+    from fakes import FakeBigBody
+
+    srv = FakeBigBody()
+    yield srv.base_url
+    srv.stop()
+
+
+def test_http_request_caps_download(run, big_server):
+    """回归: stream=True 之后又读 resp.content, 上限形同虚设, 3MB body 全进内存。"""
+    out = ok_str(run("http_request", {"method": "GET", "url": big_server + "/big"}))
+    assert "已达上限" in out
+    m = re.search(r"# Body: (\d+) bytes", out)
+    assert m, out[:200]
+    assert 1_000_000 <= int(m.group(1)) <= 1_100_000, m.group(0)
+    assert len(out) < 1_200_000, "不该把整个 3MB body 带回来"
+
+
+def test_web_fetch_caps_download(run, big_server):
+    out = ok_str(run("web_fetch", {"url": big_server + "/big", "max_chars": 100}))
+    assert "已截断到 100 字符" in out
+    assert "下载已达上限" in out
+    assert len(out) < 10_000
+
+
+def test_web_fetch_decodes_declared_charset_and_utf8_default(run, big_server):
+    assert "中文内容 GBK" in ok_str(run("web_fetch", {"url": big_server + "/gbk"}))
+    # text/html 没写 charset: 不能用 requests 补的 ISO-8859-1 去解, 否则中文全乱
+    assert "中文内容 UTF-8" in ok_str(run("web_fetch", {"url": big_server + "/nocharset"}))
 
 
 # ---------- 外部依赖类: 只验证优雅降级 ----------

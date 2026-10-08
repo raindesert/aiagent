@@ -135,10 +135,10 @@ with st.sidebar:
 st.title(agent.cfg.name)
 st.caption(
     f"model: `{agent.current_model_name}` · session: `{agent.session_id}` · "
-    f"历史 {len(agent.memory.messages())} 条"
+    f"历史 {len(agent.memory.all_messages())} 条"
 )
 
-for item in history_view(agent.memory.messages()):
+for item in history_view(agent.memory.all_messages()):
     if item["kind"] == "chat":
         with st.chat_message(item["role"]):
             st.markdown(item["content"])
@@ -152,7 +152,7 @@ if prompt:
         st.stop()
     with st.chat_message("user"):
         st.markdown(prompt)
-    before = len(agent.memory.messages())
+    before = len(agent.memory.all_messages())
     # 这一轮的工具调用是中途产生的, 上面的历史渲染还没看到; 先占个位,
     # 等回答流完再回填, 位置仍然在回答气泡上面 (和历史渲染顺序一致)
     tools_slot = st.container()
@@ -172,7 +172,7 @@ if prompt:
             st.error(f"这轮失败 ({type(e).__name__}): {e}")
 
     with tools_slot:
-        for item in history_view(agent.memory.messages()[before:]):
+        for item in history_view(agent.memory.all_messages()[before:]):
             if item["kind"] == "tool":
                 render_tool(item)
 

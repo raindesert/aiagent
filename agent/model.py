@@ -203,7 +203,8 @@ class ModelClient:
                     if tc.function.arguments:
                         slot["arguments"] += tc.function.arguments
 
-        # 无 on_token 时 (chat() 路径), 走旧的 stderr 行为 (兼容已有调用)
+        # on_token 为 None 时只补一个换行, 让调用方后续 print 的内容不粘在流式残影后面。
+        # CLI 两条路径 (流式 / 非流式) 都在这一层之上自行打印答案, 这里不再写 stderr。
         if on_token is None and content_buf and not finish_reason:
             print(file=__import__("sys").stderr)
 

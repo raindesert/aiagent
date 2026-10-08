@@ -1,15 +1,27 @@
 """工具: 在子进程跑 Python 代码, 返回 stdout / stderr / exit code。
 
 用 sys.executable 作为解释器, 保证依赖一致; 通过 stdin 喂代码, 避开命令行长度限制。
+
+编码: 父进程按 UTF-8 解码子进程输出, 所以必须把子进程的 stdio 也钉死在 UTF-8。
+中文 Windows 上管道默认走 cp936, 不处理的话 `print('中文')` 会变成乱码
+(而且这个 bug 会被 "跑测试时设了 PYTHONIOENCODING=utf-8" 掩盖, 真用起来才现形)。
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 _DEFAULT_TIMEOUT = 30  # 秒
 _MAX_OUTPUT_CHARS = 50_000
+
+
+def _utf8_env() -> dict[str, str]:
+    """继承当前环境, 但强制子进程 stdio 用 UTF-8 (含孙进程)。"""
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def python_run(code: str, timeout: int = _DEFAULT_TIMEOUT, cwd: str = ".") -> str:
@@ -31,7 +43,7 @@ def python_run(code: str, timeout: int = _DEFAULT_TIMEOUT, cwd: str = ".") -> st
 
     try:
         result = subprocess.run(
-            [sys.executable, "-"],
+            [sys.executable, "-X", "utf8", "-"],
             input=code,
             cwd=str(workdir),
             capture_output=True,
@@ -39,6 +51,7 @@ def python_run(code: str, timeout: int = _DEFAULT_TIMEOUT, cwd: str = ".") -> st
             timeout=timeout,
             encoding="utf-8",
             errors="replace",
+            env=_utf8_env(),
         )
     except subprocess.TimeoutExpired:
         return f"执行超时 ({timeout}s)"

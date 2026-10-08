@@ -5,6 +5,8 @@ import json
 
 import requests
 
+from ._net import charset_from_content_type, decode_body, read_capped
+
 _DEFAULT_TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 1_000_000  # 1 MB
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"}
@@ -67,21 +69,22 @@ def http_request(
     except requests.exceptions.RequestException as e:
         return f"请求失败: {e}"
 
-    # 读取受控大小的 body
+    # 读取受控大小的 body (流式, 不把超大响应整个拉进内存)
     try:
-        raw = resp.content[:_MAX_RESPONSE_BYTES]
-        truncated = len(resp.content) > _MAX_RESPONSE_BYTES
+        raw, truncated = read_capped(resp, _MAX_RESPONSE_BYTES)
     except Exception as e:
         return f"读取响应失败: {e}"
+    finally:
+        resp.close()
 
-    text = raw.decode("utf-8", errors="replace")
+    text = decode_body(raw, charset_from_content_type(resp.headers.get("Content-Type")), truncated=truncated)
 
     # 构造摘要
     lines: list[str] = []
     lines.append(f"HTTP {resp.status_code} {resp.reason}")
     lines.append(f"# Final URL: {resp.url}")
     lines.append(f"# Content-Type: {resp.headers.get('Content-Type', '?')}")
-    lines.append(f"# Body: {len(resp.content)} bytes" + (" (已截断)" if truncated else ""))
+    lines.append(f"# Body: {len(raw)} bytes" + (" (已达上限, 已截断)" if truncated else ""))
     lines.append("# Headers:")
     for k, v in resp.headers.items():
         if k.lower() in _SENSITIVE_HEADERS:

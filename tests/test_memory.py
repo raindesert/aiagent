@@ -103,13 +103,55 @@ def test_load_missing_session_returns_none(store):
     assert store.load("ghost") is None
 
 
-def test_save_overwrites_not_appends(store):
+def test_save_is_incremental_and_idempotent(store):
     mem = Memory()
     mem.add_user("第一轮")
     store.save("s1", mem)
+    store.save("s1", mem)  # 同一批消息重复保存不该翻倍
+    assert store.count_messages("s1") == 1
     mem.add_user("第二轮")
     store.save("s1", mem)
-    assert len(store.load("s1").messages()) == 2, "覆盖式保存, 不是追加"
+    assert store.count_messages("s1") == 2, "新消息要追加进去"
+
+
+def test_history_beyond_context_window_survives(store):
+    """回归: save 曾是"先删后写"且写的是已截断的窗口, 超窗口的老消息会被永久删掉。"""
+    mem = Memory(max_messages=4, max_tokens=10**9)
+    for i in range(10):
+        mem.add_user(f"消息{i}")
+    store.save("s1", mem)
+    assert store.count_messages("s1") == 10, "库里应该是全量"
+
+    # 模拟一次 Agent 启动: 载入 → 再聊一轮 → 自动保存
+    loaded = store.load("s1", max_messages=4, max_tokens=10**9)
+    assert len(loaded.messages()) == 4, "交给模型的只有窗口内的历史"
+    loaded.add_user("新问题")
+    store.save("s1", loaded)
+
+    assert store.count_messages("s1") == 11
+    full = store.load("s1", max_messages=100, max_tokens=10**9)
+    contents = [m.content for m in full.messages()]
+    assert contents[0] == "消息0", contents
+    assert contents[-1] == "新问题"
+
+
+def test_clear_wipes_history_and_restarts_seq(store):
+    mem = Memory()
+    mem.add_user("x")
+    store.save("s1", mem)
+    assert store.clear("s1") == 1
+    assert store.load("s1") is None
+    assert store.count_messages("s1") == 0
+
+    mem.clear()
+    assert mem.add_user("重新开始").seq == 1
+
+
+def test_seq_is_monotonic_and_keeps_advancing_after_truncation():
+    mem = Memory(max_messages=2, max_tokens=10**9)
+    for i in range(5):
+        mem.add_user(f"m{i}")
+    assert [m.seq for m in mem.messages()] == [4, 5], "窗口滑走了, 序号要继续往前走"
 
 
 def test_list_and_get_session(store):
