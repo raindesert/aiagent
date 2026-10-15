@@ -8,6 +8,8 @@
 
 窗口算法: 先按条数, 再按粗略 token 预算从最老的整组开始丢, 且
 `assistant(tool_calls)` 和它的 tool 结果必须同生共死 (拆开会让上游 400)。
+两处截断都不会越过**最后一条 user 消息** —— 丢了它, 发给模型的请求里就没有 user,
+llama.cpp 上的 MiniCPM/CPM 系模板会直接 raise_exception → HTTP 500。
 """
 from __future__ import annotations
 
@@ -117,17 +119,35 @@ class Memory:
 
     # ---- 窗口计算 (纯读, 不改 self._messages) ----
     def _window(self) -> list[Message]:
-        msgs = self._messages
-        # 先按条数 (max_messages <= 0 视为不限制)
-        if self.max_messages > 0 and len(msgs) > self.max_messages:
-            msgs = msgs[-self.max_messages :]
-        # 再按 token 预算, 从最老的整组开始丢
+        all_msgs = self._messages
+        # 最后一条 user 的下标 (全量口径)。窗口**必须**保住它, 否则请求里没有 user
+        # 消息, 很多 chat template (llama.cpp 上的 MiniCPM/CPM 系) 会直接
+        # raise_exception('No user query found in messages.') → HTTP 500。
+        last_user = max((i for i, m in enumerate(all_msgs) if m.role == "user"), default=None)
+
+        # 1) 按条数截断 (max_messages <= 0 视为不限制); 切分点不得越过最后一条 user
+        start = 0
+        if self.max_messages > 0 and len(all_msgs) > self.max_messages:
+            start = len(all_msgs) - self.max_messages
+        if last_user is not None and last_user < start:
+            start = last_user
+        msgs = all_msgs[start:]
+
+        # 2) 按 token 预算, 从最老的整组开始丢; 同样不越过最后一条 user
+        last_user_rel = None if last_user is None else last_user - start
         while msgs and self._tokens(msgs) > self.max_tokens:
             units = self._units(msgs)
             if len(units) <= 1:
                 break
-            msgs = msgs[len(units[0]) :]
-        # 兜底: 任何情况下都不把孤立 tool 消息留在开头, 否则 OpenAI 兼容后端会 400
+            drop = len(units[0])
+            # 再丢这一组就会连最后一条 user 一起丢掉 —— 那就宁可超预算
+            if last_user_rel is not None and last_user_rel < drop:
+                break
+            msgs = msgs[drop:]
+            if last_user_rel is not None:
+                last_user_rel -= drop
+
+        # 3) 兜底: 不把孤立 tool 消息留在开头, 否则 OpenAI 兼容后端会 400
         while msgs and msgs[0].role == "tool":
             msgs = msgs[1:]
         return msgs

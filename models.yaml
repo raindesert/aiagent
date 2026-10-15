@@ -10,7 +10,7 @@ models:
   - name: local
     backend: openai
     model: CPM5-2B
-    base_url: http://localhost:8080/v1
+    base_url: http://localhost:9931/v1
     api_key: ${OPENAI_API_KEY}    # llama.cpp / vllm 通常不校验, 写个占位符即可
     temperature: 0.7
     max_tokens: 2048
