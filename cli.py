@@ -40,17 +40,17 @@ BANNER = """\
 """
 
 
-def _print_banner(cfg, current_name: str, session_id: str, history_count: int) -> None:
-    base_url = ""
-    for m in cfg._models_cfg.models if hasattr(cfg, "_models_cfg") else []:
-        if m.name == current_name:
-            base_url = m.base_url
-            break
-    session_str = f"{session_id} ({history_count} 条历史)" if session_id else "(无持久化)"
+def _print_banner(cfg, agent) -> None:
+    cur = next((i for i in agent.model_info() if i["current"]), None)
+    base_url = cur["base_url"] if cur else "?"
+    history_count = len(agent.memory.all_messages())
+    session_str = (
+        f"{agent.session_id} ({history_count} 条历史)" if agent.session_id else "(无持久化)"
+    )
     print(
         BANNER.format(
             name=cfg.name,
-            model=current_name,
+            model=agent.current_model_name,
             base_url=base_url or "?",
             session=session_str,
             tool_count=len(cfg.tools),
@@ -107,7 +107,7 @@ def main() -> int:
         from agent import MemoryStore
         store = MemoryStore("~/.aiagent/memory.db")
         agent = Agent(cfg, store=store, session_id="default")
-    except ValueError as e:
+    except (ValueError, OSError) as e:
         print(f"初始化失败: {e}", file=sys.stderr)
         print(
             "提示: 在 models.yaml 里设置对应模型的 api_key, "
@@ -116,13 +116,8 @@ def main() -> int:
         )
         return 1
 
-    # 拿一份 models_file 的 models 列表, 给 banner 用
-    from agent import load_models_config
-    models_cfg = load_models_config(cfg.models_file)
-    cfg._models_cfg = models_cfg  # 临时挂一下, banner 用
-
     if show_stats:
-        _print_banner(cfg, agent.current_model_name, agent.session_id, len(agent.memory.messages()))
+        _print_banner(cfg, agent)
 
     if args.message is not None:
         result = agent.chat(args.message)
@@ -183,7 +178,7 @@ def main() -> int:
             verb = sub[0] if sub else ""
             rest = sub[1] if len(sub) > 1 else ""
             if verb in ("", "show"):
-                print(f"当前 session: {agent.session_id} ({len(agent.memory.messages())} 条历史)")
+                print(f"当前 session: {agent.session_id} ({len(agent.memory.all_messages())} 条历史)")
                 continue
             if verb == "list":
                 sessions = agent.list_sessions()
@@ -219,18 +214,20 @@ def main() -> int:
             print(f"未知子命令: {verb!r} (支持: list / new / switch / save)")
             continue
 
-        # ---- 正常对话 (流式) ----
-        # on_token 逐 token 写到 stderr (避免干扰 stdout 抓取)
-        # 流式只在模型走 .stream=True 配置时生效; 非流式模型 on_token 被忽略
-        import sys as _sys
+        # ---- 正常对话 ----
+        # 回答统一写 stdout (可被管道/重定向抓取); 模型开了 stream 就逐 token 即时输出。
+        # 注意: 模型配 stream=false 时 on_token 根本不会被调用, 必须自己把 result.content
+        # 打出来, 否则交互模式下什么都看不到 (之前只有 -m 模式打印了回答)。
+        streaming = bool(getattr(agent.model, "cfg", None) and agent.model.cfg.stream)
 
         def _on_token(t: str) -> None:
-            print(t, end="", flush=True, file=_sys.stderr)
+            print(t, end="", flush=True)
 
-        result = agent.chat(user_input, on_token=_on_token)
-        # 补换行: 流式 token 不带结尾换行, 而用了工具时压根没有 token 输出
-        if result.content or agent.model.cfg.stream:
-            print(file=_sys.stderr)  # stderr 末尾换行
+        result = agent.chat(user_input, on_token=_on_token if streaming else None)
+        if streaming:
+            print()  # 补换行: 流式 token 不带结尾换行
+        elif result.content:
+            print(result.content)
         if show_stats:
             print(f"\n[iter={result.iterations} tools={result.tool_calls_made}]")
 

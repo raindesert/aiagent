@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
-from agent import ModelClient, ModelConfig, entry_to_model_config, find_model_entry
+from agent import (
+    ModelClient,
+    ModelConfig,
+    entry_to_model_config,
+    find_model_entry,
+    load_config,
+)
 from agent.config import AgentConfig, _expand_env
 from agent.context import ContextManager
 
@@ -98,11 +105,57 @@ def test_undefined_template_variable_falls_back(cfg):
 
 
 def test_literal_braces_in_template_survive(cfg):
-    """提示词里常要写 JSON 示例, str.format 会把 `{` 当占位符, 确认兜底不吞内容。"""
+    """提示词里常要写 JSON 示例, 确认这些花括号原样保留, 且其它变量照样被替换。"""
     ctx = cfg.context.model_copy(deep=True)
-    ctx.system_prompt.template = '返回 {"ok": true} 给 {role}'
+    ctx.system_prompt.template = '返回 {"ok": true} 给 {role}, 集合 {} 与 {0}'
     sp = ContextManager(ctx).build_system_prompt()
     assert '{"ok": true}' in sp
+    assert "编程助手" in sp, "回归: 之前遇到 JSON 示例就整个模板都不替换了"
+    assert "{role}" not in sp
+    assert "{}" in sp and "{0}" in sp
+
+
+def test_models_file_resolved_relative_to_config_file(repo_root, tmp_path, monkeypatch):
+    """回归: models_file 之前按 cwd 解析, `-c 别的目录/agent.yaml` 会 FileNotFoundError。"""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "agent.yaml").write_text((repo_root / "agent.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (proj / "models.yaml").write_text((repo_root / "models.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cfg = load_config(proj / "agent.yaml")
+    assert Path(cfg.models_file).parent == proj
+    assert Path(cfg.models_file).is_file()
+
+
+def test_agent_constructs_from_any_cwd(repo_root, tmp_path, monkeypatch):
+    """同一个场景走到 Agent 构造: 不该因为 cwd 不同就 traceback。"""
+    from agent import Agent
+
+    proj = tmp_path / "proj2"
+    proj.mkdir()
+    (proj / "agent.yaml").write_text((repo_root / "agent.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    (proj / "models.yaml").write_text((repo_root / "models.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere2"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    a = Agent(load_config(proj / "agent.yaml"), session_id="cwd-test")
+    assert a.current_model_name == "local"
+
+
+def test_missing_models_file_raises_clear_error(repo_root, tmp_path, monkeypatch):
+    from agent import Agent
+
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (bare / "agent.yaml").write_text((repo_root / "agent.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    cfg = load_config(bare / "agent.yaml")  # models.yaml 不存在
+    with pytest.raises(FileNotFoundError) as e:
+        Agent(cfg, session_id="x")
+    assert "模型配置文件不存在" in str(e.value) and "models.yaml" in str(e.value)
 
 
 def test_build_messages_puts_system_first(cfg, store):

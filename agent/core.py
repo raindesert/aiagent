@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from .config import (
@@ -46,7 +47,13 @@ class Agent:
 
         # 模型配置
         if models_cfg is None:
-            models_cfg = load_models_config(cfg.models_file)
+            models_path = Path(cfg.models_file).expanduser()
+            if not models_path.is_file():
+                raise FileNotFoundError(
+                    f"模型配置文件不存在: {models_path} "
+                    f"(来自 agent.yaml 的 models_file={cfg.models_file!r})"
+                )
+            models_cfg = load_models_config(models_path)
         self._models_cfg = models_cfg
         self._current_model_name = cfg.default_model or models_cfg.default
         self.model = self._build_model_client(self._current_model_name)
@@ -257,12 +264,11 @@ class Agent:
         return result
 
     def reset(self) -> None:
-        """清空当前 session 的 memory。"""
+        """清空当前 session 的 memory (持久化库里的历史也一并删掉)。"""
         self.memory.clear()
-        # 同步到 store: 让旧 session 变空, 或者保留旧消息在 store 里?
-        # 这里简单做: 同步清空, 等下次 chat 时再写
         if self.store is not None:
             try:
-                self.store.save(self.session_id, self.memory)
+                # store.save() 现在是增量落库、不删老行, 所以清空必须显式调 clear
+                self.store.clear(self.session_id)
             except Exception as e:
-                log.warning("reset 时保存失败: %s", e)
+                log.warning("reset 时清库失败: %s", e)

@@ -44,6 +44,56 @@ def attach(agent, scripted):
     return fake
 
 
+class FakeBigBody:
+    """本地假 HTTP 服务: 回大 body / GBK / 无 charset 的响应, 给读取上限和解码用例用。
+
+    路由:
+      /big        3MB 纯文本 (验证下载上限, 不该整个读进内存)
+      /gbk        GBK 中文, Content-Type 显式声明 charset=gbk
+      /nocharset  UTF-8 中文, Content-Type 只有 text/html (没有 charset)
+    """
+
+    BIG_BYTES = 3_000_000
+
+    def __init__(self):
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path.startswith("/big"):
+                    self._send(b"x" * outer.BIG_BYTES, "text/plain")
+                elif self.path.startswith("/gbk"):
+                    self._send("中文内容 GBK".encode("gbk"), "text/html; charset=gbk")
+                elif self.path.startswith("/nocharset"):
+                    self._send("中文内容 UTF-8".encode("utf-8"), "text/html")
+                else:
+                    self._send(b"not found", "text/plain", status=404)
+
+            def _send(self, body: bytes, content_type: str, status: int = 200):
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
 class FakeOpenAI:
     """本地假 OpenAI 服务: 先流式吐一个 tool_call, 再流式吐文本。
 

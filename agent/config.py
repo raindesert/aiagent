@@ -99,11 +99,28 @@ class AgentConfig(BaseModel):
 
 
 def load_config(path: str | Path) -> AgentConfig:
-    """从 YAML 文件加载配置, 自动展开 ${ENV}。"""
-    text = Path(path).read_text(encoding="utf-8")
+    """从 YAML 文件加载配置, 自动展开 ${ENV}。
+
+    `models_file` 会先解析成绝对路径 (相对**配置文件所在目录**, 不是当前工作目录),
+    这样 `python cli.py -c D:/proj/agent.yaml` 在任意 cwd 下都能找到 models.yaml。
+    """
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
     raw = yaml.safe_load(text) or {}
     raw = _expand_env(raw)
-    return AgentConfig.model_validate(raw)
+    cfg = AgentConfig.model_validate(raw)
+    cfg.models_file = _resolve_relative(cfg.models_file, path.parent)
+    return cfg
+
+
+def _resolve_relative(value: str, base_dir: Path) -> str:
+    """把相对路径按 base_dir 解析成绝对路径; 绝对路径 / 含未展开 ${VAR} 的原样返回。"""
+    if not value or "${" in value:
+        return value
+    p = Path(value).expanduser()
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
 
 
 def load_models_config(path: str | Path) -> ModelsConfig:

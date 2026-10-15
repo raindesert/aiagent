@@ -103,13 +103,55 @@ def test_load_missing_session_returns_none(store):
     assert store.load("ghost") is None
 
 
-def test_save_overwrites_not_appends(store):
+def test_save_is_incremental_and_idempotent(store):
     mem = Memory()
     mem.add_user("第一轮")
     store.save("s1", mem)
+    store.save("s1", mem)  # 同一批消息重复保存不该翻倍
+    assert store.count_messages("s1") == 1
     mem.add_user("第二轮")
     store.save("s1", mem)
-    assert len(store.load("s1").messages()) == 2, "覆盖式保存, 不是追加"
+    assert store.count_messages("s1") == 2, "新消息要追加进去"
+
+
+def test_history_beyond_context_window_survives(store):
+    """回归: save 曾是"先删后写"且写的是已截断的窗口, 超窗口的老消息会被永久删掉。"""
+    mem = Memory(max_messages=4, max_tokens=10**9)
+    for i in range(10):
+        mem.add_user(f"消息{i}")
+    store.save("s1", mem)
+    assert store.count_messages("s1") == 10, "库里应该是全量"
+
+    # 模拟一次 Agent 启动: 载入 → 再聊一轮 → 自动保存
+    loaded = store.load("s1", max_messages=4, max_tokens=10**9)
+    assert len(loaded.messages()) == 4, "交给模型的只有窗口内的历史"
+    loaded.add_user("新问题")
+    store.save("s1", loaded)
+
+    assert store.count_messages("s1") == 11
+    full = store.load("s1", max_messages=100, max_tokens=10**9)
+    contents = [m.content for m in full.messages()]
+    assert contents[0] == "消息0", contents
+    assert contents[-1] == "新问题"
+
+
+def test_clear_wipes_history_and_restarts_seq(store):
+    mem = Memory()
+    mem.add_user("x")
+    store.save("s1", mem)
+    assert store.clear("s1") == 1
+    assert store.load("s1") is None
+    assert store.count_messages("s1") == 0
+
+    mem.clear()
+    assert mem.add_user("重新开始").seq == 1
+
+
+def test_seq_is_monotonic_and_keeps_advancing_after_truncation():
+    mem = Memory(max_messages=2, max_tokens=10**9)
+    for i in range(5):
+        mem.add_user(f"m{i}")
+    assert [m.seq for m in mem.messages()] == [4, 5], "窗口滑走了, 序号要继续往前走"
 
 
 def test_list_and_get_session(store):
@@ -151,3 +193,52 @@ def test_store_survives_reopen(tmp_path):
     m.add_user("重启前说的话")
     MemoryStore(path).save("s", m)
     assert [x.content for x in MemoryStore(path).load("s").messages()] == ["重启前说的话"]
+
+
+def test_window_never_drops_last_user_on_token_budget():
+    """回归: token 预算裁剪把最后一条 user 一起丢掉 -> 上游模板 500。
+
+    真实故障: read_file 返回整份 README (20KB) 撑爆 max_history_tokens, 裁剪循环
+    把最老的 user 丢掉, 第二次请求的 messages 变成 [system, assistant, tool],
+    llama.cpp 上的 MiniCPM/CPM 模板直接 raise_exception('No user query found')。
+    """
+    mem = Memory(max_messages=30, max_tokens=6000)
+    mem.add_user("统计下README.md的字数")
+    mem.add_assistant("", tool_calls=[{"id": "c1", "type": "function",
+        "function": {"name": "read_file", "arguments": "{}"}}])
+    mem.add_tool("x" * 30000, tool_call_id="c1")   # 远超 6000 token 预算
+
+    win = mem.messages()
+    assert [m.role for m in win] == ["user", "assistant", "tool"]
+    assert win[0].content == "统计下README.md的字数"
+    # 宁可超预算也要保住 user
+    assert mem._approx_tokens() > 6000
+    # 全量仍在, 不受窗口影响
+    assert len(mem.all_messages()) == 3
+
+
+def test_window_never_drops_last_user_on_message_count():
+    """条数截断同样不能把最后一条 user 切掉 (max_messages=2 时 [-2:] 只剩 assistant+tool)。"""
+    mem = Memory(max_messages=2, max_tokens=100000)
+    mem.add_user("问题")
+    mem.add_assistant("", tool_calls=[{"id": "c1", "type": "function",
+        "function": {"name": "read_file", "arguments": "{}"}}])
+    mem.add_tool("结果", tool_call_id="c1")
+
+    roles = [m.role for m in mem.messages()]
+    assert roles == ["user", "assistant", "tool"]
+
+
+def test_window_still_drops_old_groups_when_room():
+    """没有 user 保护冲突时, 老的整组照常丢 (assistant+tool 同进同出)。"""
+    mem = Memory(max_messages=30, max_tokens=40)
+    mem.add_user("第一个问题")
+    mem.add_assistant("很长的第一个回答" * 10)
+    mem.add_user("第二个问题")
+    mem.add_assistant("很长的第二个回答" * 10)
+
+    win = mem.messages()
+    roles = [m.role for m in win]
+    assert "user" in roles
+    assert roles[-1] == "assistant"
+    assert win[0].content == "第二个问题"   # 老的 user 正常被丢

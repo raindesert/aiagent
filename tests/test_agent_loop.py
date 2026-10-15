@@ -136,7 +136,26 @@ def test_reset_clears_memory_and_store(cfg, store):
     a.chat("问题")
     a.reset()
     assert a.memory.messages() == []
+    assert store.count_messages("r") == 0, "清空要连库里的历史一起删 (save 只增量追加, 不会删)"
     assert store.load("r") is None or store.load("r").messages() == []
+
+
+def test_long_session_keeps_full_history_in_store(cfg, store):
+    """回归: 超出上下文窗口的历史, 之前每次自动保存都会被覆盖式写回删掉。"""
+    c = copy.deepcopy(cfg)
+    c.context.max_history_messages = 4
+    a = Agent(c, store=store, session_id="long")
+    for i in range(6):
+        attach(a, [f"回答{i}"])
+        a.chat(f"问题{i}")
+
+    assert len(a.memory.messages()) == 4, "只有窗口内的历史交给模型"
+    assert store.count_messages("long") == 12, "库里要保持全量 6 轮"
+
+    b = Agent(c, store=store, session_id="long")  # 重启后继续这个 session
+    assert len(b.memory.messages()) == 4
+    full = store.load("long", max_messages=100, max_tokens=10**9)
+    assert [m.content for m in full.messages()][:2] == ["问题0", "回答0"], "最早的对话还在"
 
 
 # ---------- 模型切换 ----------

@@ -22,6 +22,9 @@ class FakeMemory:
     def messages(self):
         return self.items
 
+    def all_messages(self):
+        return self.items
+
     def clear(self):
         self.items.clear()
 
@@ -33,8 +36,13 @@ class FakeTools:
 
 
 class FakeModel:
+    # 类属性, 测试可 monkeypatch 成 False 模拟 stream: false 的模型
+    stream = True
+
     def __init__(self):
-        self.cfg = ModelConfig(name="fake", api_key="k", base_url="http://x/v1", stream=True)
+        self.cfg = ModelConfig(
+            name="fake", api_key="k", base_url="http://x/v1", stream=type(self).stream
+        )
 
 
 class FakeAgent:
@@ -189,12 +197,24 @@ def test_iteration_stats_in_message_mode_with_verbose(cli_env, monkeypatch, caps
     assert "[iter=1 tools=[]]" in capsys.readouterr().out
 
 
-def test_interactive_passes_streaming_callback(cli_env, monkeypatch, capsys):
+def test_interactive_streams_answer_to_stdout(cli_env, monkeypatch, capsys):
+    """回答走 stdout (可被重定向/管道抓取), 流式 token 也是即时写 stdout。"""
     feed(monkeypatch, ["说话", "/quit"])
     run_cli(monkeypatch, [])
-    err = capsys.readouterr().err
-    assert "答案" in err, "流式 token 应该打到 stderr"
-    assert err.endswith("\n"), "流式结束后要补换行, 否则和 stdout 串行错乱"
+    captured = capsys.readouterr()
+    assert "答案" in captured.out
+    assert captured.out.endswith("\n"), "流式结束后要补换行"
+    assert "答案" not in captured.err
+
+
+def test_interactive_non_streaming_model_still_prints_answer(cli_env, monkeypatch, capsys):
+    """回归: 模型 stream=false 时 on_token 根本不会被调用, 之前交互模式什么都看不到。"""
+    monkeypatch.setattr(FakeModel, "stream", False)
+    feed(monkeypatch, ["说话", "/quit"])
+    assert run_cli(monkeypatch, []) == 0
+    captured = capsys.readouterr()
+    assert "答案" in captured.out
+    assert cli_env[0].chat_calls == ["说话"]
 
 
 # ---------- 斜杠命令 ----------

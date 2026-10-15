@@ -9,9 +9,9 @@
 - **配置驱动** —— 提示词、模型、工具、循环策略全部在 `agent.yaml` 里
 - **OpenAI 兼容协议** —— 一行配置切换 OpenAI / DeepSeek / 通义 / Ollama / llama.cpp server
 - **原生 function calling** —— 用模型原生的 `tool_calls` 字段, 工具定义用 JSON Schema
-- **多轮记忆** —— 滚动窗口 + 粗略 token 预算, 超出自动截断
-- **持久化记忆** —— SQLite 存对话历史, 跨 session / 跨重启保留 (`/session` 管理)
-- **流式输出** —— 模型回答时逐 token 实时显示
+- **多轮记忆** —— 滚动窗口 + 粗略 token 预算, 超出自动截断 (只影响发给模型的部分)
+- **持久化记忆** —— SQLite 存对话历史, 跨 session / 跨重启保留 (`/session` 管理); 落库与上下文窗口解耦, 库里保留全量, 窗口外的历史不会被删
+- **流式输出** —— 模型回答时逐 token 实时显示到 stdout (可被管道/重定向捕获)
 - **多模型切换** —— 在 `models.yaml` 配多个后端, 交互中 `/model <name>` 切换
 - **Web UI** —— `python -m streamlit run ui.py`, 浏览器里对话 + 流式显示 + 侧边栏切模型/管会话
 - **工具沙箱** —— 每个工具独立超时, 异常被捕获并以 tool message 形式回喂
@@ -26,13 +26,13 @@
 | `search_files` | 在目录里按 glob 模式搜索文件 |
 | `send_rabbit_message` | 调本地 RabbitMQ HTTP 网关 (`127.0.0.1:8081`) 发消息 |
 | `run_shell` | 执行 shell 命令, Windows 默认调 PowerShell (UTF-8 编码, 避免引号问题); 内置危险命令拦截 |
-| `read_file` | 读文件, 带行号 (`cat -n` 风格), 支持起止行 |
-| `write_file` | 写文件, 自动建父目录 |
-| `edit_file` | 精确字符串替换, `old` 必须唯一匹配 |
-| `web_fetch` | 抓 URL, HTML 自动转纯文本 |
-| `http_request` | 通用 HTTP 客户端 (GET/POST/PUT/DELETE/PATCH/HEAD) |
+| `read_file` | 读文件, 带行号 (`cat -n` 风格), 支持起止行; 非 UTF-8 文件会替换显示并在 header 提示 |
+| `write_file` | 写文件, 自动建父目录; **按字节写**, 不改动内容的行尾 (`\n` 不会被转成 `\r\n`) |
+| `edit_file` | 精确字符串替换, `old` 必须唯一匹配; CRLF 文件也可用 LF 形式的 `old` 匹配, 写回时保留原行尾; 非 UTF-8 文件直接拒绝 (避免写坏 GBK 等编码) |
+| `web_fetch` | 抓 URL, HTML 自动转纯文本; 下载上限 2 MB, 超出会截断并提示 |
+| `http_request` | 通用 HTTP 客户端 (GET/POST/PUT/DELETE/PATCH/HEAD); 响应体有读取上限, 超限截断 |
 | `grep_search` | 在目录里按正则搜索, 输出 `file:行号: 片段` 格式 |
-| `python_run` | 子进程跑 Python 代码, 用 `sys.executable`, 通过 stdin 喂代码 (无长度限制) |
+| `python_run` | 子进程跑 Python 代码, 用 `sys.executable`, 通过 stdin 喂代码 (无长度限制); 子进程强制 UTF-8 stdio, 子进程 print 中文不乱码 |
 
 ## 目录结构
 
@@ -52,8 +52,8 @@ aiagent/
 │   ├── __init__.py
 │   ├── config.py           # Pydantic 配置模型 + ${ENV} 展开
 │   ├── context.py          # 上下文/系统提示管理
-│   ├── memory.py           # 多轮对话记忆 + 截断
-│   ├── memory_store.py     # SQLite 持久化 session
+│   ├── memory.py           # 多轮对话记忆 (内存留全量, 读取时算窗口)
+│   ├── memory_store.py     # SQLite 持久化 session (按 seq 增量 upsert)
 │   ├── model.py            # OpenAI 兼容模型客户端 (流式 + 工具调用)
 │   ├── tools.py            # 工具注册表 (schema + 执行 + 必填校验 + 超时)
 │   ├── ui_support.py       # Web UI 纯逻辑 (消息视图 + 流式转次), 不依赖 streamlit
@@ -67,6 +67,7 @@ aiagent/
 │   ├── files.py            # read_file / write_file / edit_file
 │   ├── web.py              # web_fetch (HTML→text)
 │   ├── http.py             # http_request
+│   ├── _net.py             # http/web 共用: 流式读取上限 + 按 charset 解码
 │   ├── grep.py             # grep_search
 │   └── python_run.py       # python_run
 └── tests/                  # pytest 套件 (见下文"测试")
@@ -219,7 +220,12 @@ context:
       role: 编程助手
 ```
 
-模板用 Python `str.format`, 已注入的运行时变量: `current_time` (你也可以在 `Agent.chat()` 里通过 `runtime_vars` 传更多)。
+模板只替换 `{标识符}` 形式 (正则 `\{([A-Za-z_][A-Za-z0-9_]*)\}`), 不走 `str.format`。
+已注入的运行时变量: `current_time` (你也可以在 `Agent.chat()` 里通过 `runtime_vars` 传更多)。
+
+> 这样 JSON 示例、Python 代码块里的花括号都能原样保留:
+> `返回 {"ok": true}` / `set()` / `{}` / `{0}` / `{var:spec}` 都不会被破坏。
+> 未定义的变量会渲染成 `<missing:变量名>` 而不是抛 `KeyError`。
 
 ## 改 / 新增工具
 
@@ -294,11 +300,15 @@ python cli.py [-h] [-c CONFIG] [--print-config] [-v] [--debug] [-q] [-m MESSAGE]
 
 ## 流式输出 + 持久化记忆
 
-**流式**: 模型回答时**逐 token 实时显示**到 stderr, 不再等整段生成完。
+**流式**: 模型回答时**逐 token 实时显示到 stdout**, 不再等整段生成完。
 内部 `ModelClient.chat_streaming(messages, tools, on_token)` 接受回调。
-非流式模型 (`stream=false`) 自动降级到一次性输出。
+非流式模型 (`stream=false`) 自动降级到一次性输出 —— 两种情况答案都打印到 stdout, 可以直接管道给别的命令。
 
 **持久化**: 对话历史存到 SQLite (`~/.aiagent/memory.db`), 跨重启 / 跨 session 保留。每次 `chat()` 后自动 save, 启动时自动加载。
+
+**窗口 vs 存储**: `context.max_history_messages` / `max_history_tokens` 只决定"每次发给模型带多少", SQLite 里始终保留该 session 的**全量**历史。
+每条消息带一个 session 内单调递增的 `seq` 作为主键, `save()` 按 seq 做 `INSERT OR REPLACE` 增量 upsert —— 反复 save 不会产生重复行, 也不会因为窗口截断而把老消息删掉。
+删历史的唯一入口是显式调用: `/reset` → `MemoryStore.clear(session_id)`。
 
 ```python
 from agent import Agent, load_config, MemoryStore
@@ -319,12 +329,12 @@ agent = Agent(cfg, store=store, session_id="proj1")
 | 字段 | 说明 |
 |------|------|
 | `agent.name` | 仅用于日志/CLI banner |
-| `models_file` | 指向 `models.yaml`, 默认 `models.yaml` |
+| `models_file` | 指向 `models.yaml`; **相对路径按本配置文件所在目录解析** (不是 cwd), 所以 `-c 别的目录/agent.yaml` 也能跑; 加载时会转成绝对路径 |
 | `default_model` | 启动用哪个, 留空用 `models.yaml` 里的 `default` |
 | `context.system_prompt.template` | 系统提示词模板 |
 | `context.system_prompt.variables` | 模板变量, 运行时可覆盖 |
-| `context.max_history_messages` | 记忆里最多保留多少条消息 |
-| `context.max_history_tokens` | 粗略 token 预算, 超出截断 |
+| `context.max_history_messages` | 每次发给模型最多带多少条消息 (只影响发送量, 不影响库里存了多少) |
+| `context.max_history_tokens` | 发给模型的粗略 token 预算, 超出按「原子组」丢最老的消息 |
 | `tools[].name` | 工具名 (全英文, 模型用此调用) |
 | `tools[].description` | 工具描述 (模型靠这个判断何时调用) |
 | `tools[].enabled` | 是否启用 |
@@ -370,14 +380,16 @@ pytest -m "e2e or network" -v
 
 - 只支持 OpenAI 兼容协议 (其他后端后续可加)
 - 只支持原生 function calling (ReAct 文本解析模式后续可加)
-- 记忆截断是简单 FIFO, 没有摘要压缩
+- 记忆截断是简单 FIFO, 没有摘要压缩 (但截断只影响发给模型的内容, SQLite 里全量保留)
+- `web_fetch` / `http_request` 有下载上限 (2 MB / 响应体上限), 更大的文件只能截断看前半段
+- `edit_file` 只支持 UTF-8 文本文件, GBK/cp936 等编码文件会被明确拒绝而不是尽力修改
 - 单进程, 不支持服务端多用户
 - `python_run` 没有危险代码拦截, agent 拿到这个工具等于能跑任意 Python (要更安全可改用受限子进程或 WASM)
 
 ## 后续可加的东西
 
 - ReAct 文本解析作为 fallback, 给 4B 以下小模型用
-- 对话持久化 (SQLite / JSON)
+- 记忆摘要压缩 (长会话超出窗口时把老消息压成摘要, 而不是直接丢)
 - FastAPI 服务化
 - 流式输出 token 到前端 (SSE / WebSocket)
 - Tool 调用结果缓存 (相同输入直接返回)

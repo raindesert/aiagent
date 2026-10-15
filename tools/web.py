@@ -5,8 +5,11 @@ import re
 
 import requests
 
+from ._net import charset_from_content_type, decode_body, read_capped
+
 _DEFAULT_TIMEOUT = 15
 _DEFAULT_MAX_CHARS = 50_000
+_MAX_DOWNLOAD_BYTES = 2_000_000  # 单次最多下载 2MB, 防止大文件把内存打满
 
 _HEADERS = {
     "User-Agent": "aiagent/0.1 (+https://github.com/raindesert/aiagent)",
@@ -32,7 +35,7 @@ def web_fetch(url: str, max_chars: int = _DEFAULT_MAX_CHARS, timeout: int = _DEF
         return "timeout 必须为正整数"
 
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=timeout, allow_redirects=True)
+        resp = requests.get(url, headers=_HEADERS, timeout=timeout, allow_redirects=True, stream=True)
     except requests.exceptions.Timeout:
         return f"请求超时 ({timeout}s)"
     except requests.exceptions.SSLError as e:
@@ -42,25 +45,34 @@ def web_fetch(url: str, max_chars: int = _DEFAULT_MAX_CHARS, timeout: int = _DEF
     except requests.exceptions.RequestException as e:
         return f"请求失败: {e}"
 
-    if resp.status_code != 200:
-        return f"HTTP {resp.status_code} {resp.reason}"
+    try:
+        if resp.status_code != 200:
+            return f"HTTP {resp.status_code} {resp.reason}"
+        raw, truncated_download = read_capped(resp, _MAX_DOWNLOAD_BYTES)
+        final_url = resp.url
+        content_type = resp.headers.get("Content-Type", "")
+        status = resp.status_code
+    finally:
+        resp.close()
 
-    final_url = resp.url
-    content_type = resp.headers.get("Content-Type", "")
-    raw = resp.text
-    if "html" in content_type.lower() or "<html" in raw[:200].lower():
-        text = _html_to_text(raw)
-    else:
-        text = raw
+    text = decode_body(
+        raw,
+        charset_from_content_type(content_type),
+        truncated=truncated_download,
+    )
+    if "html" in content_type.lower() or "<html" in text[:200].lower():
+        text = _html_to_text(text)
 
     truncated = False
     if len(text) > max_chars:
         text = text[:max_chars]
         truncated = True
 
-    head = f"# {final_url}\n# Content-Type: {content_type or '?'}  HTTP {resp.status_code}\n"
+    head = f"# {final_url}\n# Content-Type: {content_type or '?'}  HTTP {status}\n"
     if truncated:
-        head += f"# (已截断到 {max_chars} 字符, 原文约 {len(raw)} 字符)\n"
+        head += f"# (已截断到 {max_chars} 字符)\n"
+    if truncated_download:
+        head += f"# (下载已达上限 {_MAX_DOWNLOAD_BYTES} bytes, 内容可能不完整)\n"
     return head + "\n" + text
 
 
